@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+.git
+.github
+.copilot
+node_modules
+npm-debug.log*
+data
+uploads
+coverage
+test

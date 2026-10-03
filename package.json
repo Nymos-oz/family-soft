@@ -1,0 +1,39 @@
+{
+  "name": "family-soft",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Интернет-магазин домашнего текстиля Family Soft",
+  "type": "module",
+  "scripts": {
+    "prestart": "node scripts/generate-assets.js",
+    "start": "node --env-file-if-exists=.env server.js",
+    "bot:max": "node --use-system-ca --env-file-if-exists=.env scripts/max-bot.js",
+    "bot:max:setup": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/setup-max-bot.ps1",
+    "bot:max:start": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/start-max-bot.ps1",
+    "bot:max:stop": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/stop-max-bot.ps1",
+    "bot:max:webhook": "node --env-file-if-exists=.env scripts/register-max-webhook.js",
+    "bot:max:deploy": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/deploy-max-worker.ps1",
+    "bot:max:secrets": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/update-max-worker-secrets.ps1",
+    "seed": "node src/database.js",
+    "restore": "node scripts/restore-backup.js",
+    "assets": "node scripts/generate-assets.js",
+    "check": "node --check server.js && node --check src/database.js && node --check src/max-bot.js && node --check public/hero.js && node --check public/max-app.js && node --check public/app.js && node --check scripts/generate-assets.js && node --check scripts/restore-backup.js && node --check scripts/max-bot.js && node --check scripts/setup-max-bot.js && node --check scripts/register-max-webhook.js && node --check cloudflare/src/worker.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.9"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.0.0",
+    "multer": "^2.4.0",
+    "nodemailer": "^10.0.13",
+    "otplib": "^12.0.1",
+    "sharp": "^0.35.5"
+  },
+  "devDependencies": {
+    "wrangler": "^4.147.0"
+  }
+}

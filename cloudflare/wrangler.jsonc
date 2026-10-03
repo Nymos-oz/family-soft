@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "family-soft-max-bot",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-10-02",
+  "assets": {
+    "directory": "../public",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "family-soft-max-bot",
+      "database_id": "b4c99c39-872d-4a8d-b1bd-da1199ad2195",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

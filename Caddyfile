@@ -1,0 +1,11 @@
+family-soft.ru, www.family-soft.ru {
+	@www host www.family-soft.ru
+	redir @www https://family-soft.ru{uri} permanent
+
+	encode zstd gzip
+	reverse_proxy app:3000
+}
+
+family-soft.online, www.family-soft.online {
+	redir https://family-soft.ru{uri} permanent
+}
