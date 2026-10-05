@@ -60,7 +60,7 @@ function orderActionButtons(order) {
   let actions = [];
   if (order.payment_status === 'pending') {
     actions = [
-      [button('Отметить оплату', `/оплачен ${id}`)],
+      [button('Подтвердить оплату', `/оплачен ${id}`)],
       [button('Отменить заказ', `/отменить заказ ${id}`)]
     ];
   } else if (order.payment_status === 'paid' && order.status === 'new') {
@@ -100,11 +100,17 @@ function orderNotification(order, source) {
     ...(order.gift_wrap ? [`Подарочная упаковка: ${money(giftWrapPrice)}`] : []),
     `Доставка: ${money(order.delivery_price)}`,
     `Итого: ${money(order.total)}`,
-    `Оплата: ${order.payment_method === 'manual' ? 'перевод через СБП' : order.payment_method}; ${paymentStatus}`,
-    `Сумма перевода: ${moneyKopecks(order.pay_amount_unique)}`,
+    `Оплата: ${order.payment_method === 'manual'
+      ? `перевод через СБП; ${paymentStatus}`
+      : order.payment_method === 'seller_contact' ? 'по согласованию с продавцом' : `${order.payment_method}; ${paymentStatus}`}`,
+    ...(order.payment_method === 'manual' ? [`Сумма перевода: ${moneyKopecks(order.pay_amount_unique)}`] : []),
     ...(order.promo_code ? [`Промокод: ${order.promo_code}`] : []),
     ...(order.comment ? [`Комментарий: ${order.comment}`] : []),
-    order.payment_status === 'pending' ? 'Проверьте поступление в банковском приложении перед подтверждением оплаты.' : ''
+    order.payment_status === 'pending' && order.payment_method === 'manual'
+      ? 'Проверьте поступление в банковском приложении перед подтверждением оплаты.'
+      : order.payment_status === 'pending' && order.payment_method === 'seller_contact'
+        ? 'Свяжитесь с покупателем и согласуйте оплату перед началом сборки.'
+        : ''
   ].filter(Boolean).join('\n');
 }
 
@@ -271,6 +277,7 @@ async function siteConfig(env, db) {
     metrikaId: '',
     paymentMode: 'manual',
     paymentAvailable: manualReady,
+    orderAvailable: Boolean(env.MAX_BOT_OWNER_ID),
     deliveryPrice: Number(await setting(db, 'delivery_price', '450')),
     freeDeliveryThreshold: Number(await setting(db, 'free_delivery_threshold', '10000')),
     giftWrapPrice: Number(await setting(db, 'gift_wrap_price', '350')),
@@ -423,9 +430,12 @@ async function createSiteOrder(request, env, db, url) {
   if (body.consentData !== true || body.consentOffer !== true) {
     return json({ error: 'Подтвердите согласие с политикой конфиденциальности и офертой.' }, 400);
   }
-  if (!env.MAX_BOT_OWNER_ID || !env.SBP_PHONE || !env.SBP_BANK || !env.SBP_RECEIVER_NAME) {
-    return json({ error: 'Магазин пока не настроил оплату через СБП. Попробуйте позже или свяжитесь с магазином.' }, 503);
+  if (!env.MAX_BOT_OWNER_ID) {
+    return json({ error: 'Приём заказов временно недоступен. Свяжитесь с магазином.' }, 503);
   }
+  const paymentMethod = env.SBP_PHONE && env.SBP_BANK && env.SBP_RECEIVER_NAME
+    ? 'manual'
+    : 'seller_contact';
   const idempotenceKey = clean(request.headers.get('Idempotency-Key'), 80);
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(idempotenceKey)) {
     return json({ error: 'Не удалось подтвердить запрос заказа. Обновите страницу и попробуйте ещё раз.' }, 400);
@@ -433,14 +443,14 @@ async function createSiteOrder(request, env, db, url) {
   const existing = await db.prepare(`SELECT id, public_token, total, pay_amount_unique,
     payment_status, payment_method FROM orders WHERE idempotence_key = ?`).bind(idempotenceKey).first();
   if (existing) {
-    if (existing.payment_status !== 'pending' || existing.payment_method !== 'manual') {
+    if (existing.payment_status !== 'pending' || !['manual', 'seller_contact'].includes(existing.payment_method)) {
       return json({ error: 'Этот запрос уже завершён. Проверьте статус предыдущего заказа.' }, 409);
     }
     return json({
       id: existing.id,
       publicToken: existing.public_token,
       total: existing.total,
-      payAmount: existing.pay_amount_unique,
+      ...(existing.payment_method === 'manual' ? { payAmount: existing.pay_amount_unique } : {}),
       statusUrl: `/order/${existing.id}/status?t=${encodeURIComponent(existing.public_token)}`
     });
   }
@@ -448,8 +458,7 @@ async function createSiteOrder(request, env, db, url) {
   if (calculated.error) return json({ error: calculated.error }, calculated.status);
   const rawUnique = request.headers.get('Idempotency-Key');
   const pending = await db.prepare(`SELECT pay_amount_unique FROM orders
-    WHERE payment_status = 'pending' AND payment_method = 'manual'
-      AND created_at > datetime('now', '-24 hours')`).all();
+    WHERE payment_status = 'pending'`).all();
   const used = new Set(pending.results.map(row => row.pay_amount_unique));
   let uniqueAmount = 0;
   for (let kopecks = 1; kopecks < 100; kopecks += 1) {
@@ -466,11 +475,11 @@ async function createSiteOrder(request, env, db, url) {
     (public_token, customer_name, phone, email, delivery_type, address, comment, items,
       subtotal, discount, gift_wrap, gift_card_text, delivery_price, total, pay_amount_unique,
       promo_code, status, payment_status, payment_method, idempotence_key)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', 'pending', 'manual', ?)`)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', 'pending', ?, ?)`)
     .bind(publicToken, name, phone, email, calculated.deliveryType, calculated.address,
       clean(body.comment, 500), items, calculated.subtotal, calculated.discount,
       calculated.giftWrap ? 1 : 0, clean(body.giftCardText, 300), calculated.deliveryPrice,
-      calculated.total, uniqueAmount, calculated.promoCode, idempotenceKey).run();
+      calculated.total, uniqueAmount, calculated.promoCode, paymentMethod, idempotenceKey).run();
   const orderId = inserted.meta.last_row_id;
   const quantities = new Map();
   for (const item of calculated.items) quantities.set(item.productId, (quantities.get(item.productId) || 0) + item.quantity);
@@ -492,7 +501,8 @@ async function createSiteOrder(request, env, db, url) {
       .bind(calculated.promoCode).run();
   }
   await db.prepare(`INSERT INTO payment_logs(order_id, event, payload)
-    VALUES (?, 'website_manual_order_created', '{}')`).bind(orderId).run();
+    VALUES (?, ?, '{}')`).bind(orderId,
+    paymentMethod === 'manual' ? 'website_manual_order_created' : 'website_seller_contact_order_created').run();
   try {
     const order = await db.prepare('SELECT * FROM orders WHERE id = ?').bind(orderId).first();
     await notifyOwner(env, orderNotification(order, 'с сайта'), url.origin, {
@@ -505,7 +515,7 @@ async function createSiteOrder(request, env, db, url) {
     id: orderId,
     publicToken,
     total: calculated.total,
-    payAmount: uniqueAmount,
+    ...(paymentMethod === 'manual' ? { payAmount: uniqueAmount } : {}),
     statusUrl: `/order/${orderId}/status?t=${encodeURIComponent(publicToken)}`
   }, 201);
 }
@@ -580,6 +590,9 @@ async function handleSiteApi(request, env, url) {
     const row = await db.prepare('SELECT id, public_token, payment_status, payment_method, pay_amount_unique FROM orders WHERE id = ?')
       .bind(Number(paidNotice[1])).first();
     if (!row || !body || !safeEqual(body.publicToken || '', row.public_token)) return json({ error: 'Заказ не найден.' }, 404);
+    if (row.payment_method === 'seller_contact') {
+      return json({ error: 'Продавец свяжется с вами, чтобы согласовать оплату. Не переводите деньги до получения инструкций.' }, 400);
+    }
     if (row.payment_method !== 'manual') return json({ error: 'Этот заказ оплачивается через платёжный сервис.' }, 400);
     if (row.payment_status !== 'pending') return json({ error: 'Статус оплаты уже изменён.' }, 409);
     await db.prepare(`INSERT INTO payment_logs(order_id, event, payload)
@@ -829,10 +842,12 @@ async function orderStatus(db, userId) {
 async function cancelOrder(db, orderId, userId = '') {
   const existing = userId
     ? await db.prepare(`SELECT o.id, o.items FROM orders o JOIN max_chat_orders c ON c.order_id = o.id
-      WHERE o.id = ? AND c.user_id = ? AND o.payment_status = 'pending' AND o.payment_method = 'manual'`)
+      WHERE o.id = ? AND c.user_id = ? AND o.payment_status = 'pending'
+        AND o.payment_method IN ('manual', 'seller_contact')`)
       .bind(orderId, String(userId)).first()
     : await db.prepare(`SELECT o.id, o.items FROM orders o
-      WHERE o.id = ? AND o.payment_status = 'pending' AND o.payment_method = 'manual'`)
+      WHERE o.id = ? AND o.payment_status = 'pending'
+        AND o.payment_method IN ('manual', 'seller_contact')`)
       .bind(orderId).first();
   if (!existing) return false;
   const items = JSON.parse(existing.items);
@@ -858,7 +873,12 @@ async function createCustomRequest(db, userId, state) {
 }
 
 async function notifyOwner(env, text, origin, options = {}) {
-  if (env.MAX_BOT_OWNER_ID) await sendMessage(env, env.MAX_BOT_OWNER_ID, text, options, origin);
+  if (!env.MAX_BOT_OWNER_ID) return;
+  if (!env.MAX_BOT_TOKEN) {
+    console.error('MAX_BOT_TOKEN is missing; owner notification was not sent.');
+    return;
+  }
+  await sendMessage(env, env.MAX_BOT_OWNER_ID, text, options, origin);
 }
 
 async function collectFlow(env, userId, text, origin, state) {
@@ -1146,10 +1166,10 @@ async function reply(env, update, origin) {
     if (/^\/?помощь продавцу$/i.test(normalized)) {
       await send([
         'Помощник продавца Fami',
-        '🔔 «Новые заказы» — ожидают оплаты или проверки поступления.',
+        '🔔 «Новые заказы» — ждут оплаты или согласования оплаты с покупателем.',
         '📦 «Активные заказы» — все заказы, которые ещё не завершены.',
         'Откройте заказ кнопкой, чтобы посмотреть покупателя, товары, доставку и оплату.',
-        'После проверки банка подтвердите оплату, затем отмечайте сборку, готовность или отправку.',
+        'При оплате по согласованию свяжитесь с покупателем. Подтвердите оплату только после её фактического получения, затем отмечайте сборку, готовность или отправку.',
         'Для возврата в меню нажмите «Панель продавца».'
       ].join('\n'), {
         buttons: [...sellerKeyboard(), [button('Панель продавца', '/панель')]]
@@ -1162,10 +1182,14 @@ async function reply(env, update, origin) {
       const result = await env.DB.batch([
         env.DB.prepare(`UPDATE orders SET payment_status = 'paid',
           status = CASE WHEN status = 'on_hold' THEN status ELSE 'new' END,
-          paid_at = CURRENT_TIMESTAMP WHERE id = ? AND payment_status = 'pending' AND payment_method = 'manual'`)
+          paid_at = CURRENT_TIMESTAMP WHERE id = ? AND payment_status = 'pending'
+            AND payment_method IN ('manual', 'seller_contact')`)
           .bind(orderId),
         env.DB.prepare(`INSERT INTO payment_logs(order_id, event, payload)
-          SELECT id, 'max_owner_manual_confirmation', '{}' FROM orders WHERE id = ? AND payment_status = 'paid'`)
+          SELECT id, CASE WHEN payment_method = 'seller_contact'
+            THEN 'max_owner_seller_contact_payment_confirmation'
+            ELSE 'max_owner_manual_confirmation' END, '{}'
+          FROM orders WHERE id = ? AND payment_status = 'paid'`)
           .bind(orderId)
       ]);
       if (!result[0].meta.changes) {
@@ -1173,9 +1197,9 @@ async function reply(env, update, origin) {
         return;
       }
       const buyer = await env.DB.prepare('SELECT user_id FROM max_chat_orders WHERE order_id = ?').bind(orderId).first();
-      if (buyer) await sendMessage(env, buyer.user_id, `Оплата заказа №${orderId} проверена и подтверждена. Спасибо!`, {}, origin);
+      if (buyer) await sendMessage(env, buyer.user_id, `Оплата заказа №${orderId} подтверждена. Спасибо!`, {}, origin);
       const order = await env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(orderId).first();
-      await send(`Заказ №${orderId} отмечен оплаченным. Подтверждайте только после проверки поступления в банке.`, {
+      await send(`Заказ №${orderId} отмечен оплаченным. Подтверждайте только после фактического получения оплаты согласованным способом.`, {
         buttons: orderActionButtons(order)
       });
       return;
@@ -1209,7 +1233,7 @@ async function reply(env, update, origin) {
     }
     if (/^\/?(?:новые заказы|ожидают оплаты)$/i.test(normalized)) {
       const rows = await env.DB.prepare(`SELECT o.id, o.customer_name, o.phone, o.pay_amount_unique,
-        o.payment_status, o.status, o.delivery_type,
+        o.payment_status, o.payment_method, o.status, o.delivery_type,
         CASE WHEN c.order_id IS NULL THEN 'сайт' ELSE 'MAX' END AS source
         FROM orders o LEFT JOIN max_chat_orders c ON c.order_id = o.id
         WHERE o.payment_status = 'pending' AND o.status NOT IN ('canceled', 'done')
@@ -1218,7 +1242,7 @@ async function reply(env, update, origin) {
         [button(`Заказ №${order.id} · ${order.customer_name}`, `/заказ ${order.id}`)]
       );
       await send(rows.results.length
-        ? rows.results.map(order => `№${order.id} (${order.source}) — ${order.customer_name}, ${order.phone}; ожидает оплаты ${moneyKopecks(order.pay_amount_unique)}`).join('\n')
+        ? rows.results.map(order => `№${order.id} (${order.source}) — ${order.customer_name}, ${order.phone}; ${order.payment_method === 'seller_contact' ? 'оплата по согласованию с продавцом' : `ожидает оплаты ${moneyKopecks(order.pay_amount_unique)}`}`).join('\n')
         : 'Новых заказов, ожидающих оплаты, нет.', {
         buttons: [...orderButtons, ...sellerKeyboard()]
       });
@@ -1226,7 +1250,7 @@ async function reply(env, update, origin) {
     }
     if (/^\/?(?:заказы|активные заказы)$/i.test(normalized)) {
       const rows = await env.DB.prepare(`SELECT o.id, o.customer_name, o.phone, o.pay_amount_unique,
-        o.payment_status, o.status, o.delivery_type,
+        o.payment_status, o.payment_method, o.status, o.delivery_type,
         CASE WHEN c.order_id IS NULL THEN 'сайт' ELSE 'MAX' END AS source
         FROM orders o LEFT JOIN max_chat_orders c ON c.order_id = o.id
         WHERE o.status NOT IN ('done', 'canceled') AND o.payment_status NOT IN ('canceled', 'refunded')
@@ -1235,7 +1259,7 @@ async function reply(env, update, origin) {
         [button(`Заказ №${order.id} · ${order.customer_name}`, `/заказ ${order.id}`)]
       );
       await send(rows.results.length
-        ? rows.results.map(order => `№${order.id} (${order.source}) — ${order.customer_name}, ${order.phone}; ${order.payment_status === 'pending' ? `ожидает оплату ${moneyKopecks(order.pay_amount_unique)} — /оплачен ${order.id}` : `оплачено, статус: ${order.status}`} — /заказ ${order.id}`).join('\n')
+        ? rows.results.map(order => `№${order.id} (${order.source}) — ${order.customer_name}, ${order.phone}; ${order.payment_status === 'pending' ? `${order.payment_method === 'seller_contact' ? 'оплата по согласованию с продавцом' : `ожидает оплату ${moneyKopecks(order.pay_amount_unique)}`} — /оплачен ${order.id}` : `оплачено, статус: ${order.status}`} — /заказ ${order.id}`).join('\n')
         : 'Активных заказов нет.', {
         buttons: [...orderButtons, ...sellerKeyboard()]
       });

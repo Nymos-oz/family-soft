@@ -482,9 +482,12 @@ async function renderCart() {
 async function renderCheckout() {
   const accountSession = await api('/api/account/session');
   const accountProfile = accountSession.authenticated ? (await api('/api/account')).profile : null;
+  const orderAvailable = shopConfig.orderAvailable ?? shopConfig.paymentAvailable;
+  const paymentAvailable = shopConfig.paymentAvailable;
   shell(`<section class="page-main container"><div class="breadcrumbs"><a href="/">Главная</a> / <a href="/cart">Корзина</a> / Оформление</div>
     <div class="form-card"><h1>Оформление заказа</h1><p>Мы отправим подтверждение и ссылку на статус заказа на указанный email.</p>
-      ${shopConfig.paymentAvailable ? '' : '<p class="notice">Оплата временно недоступна: владелец магазина ещё не настроил реквизиты. Заказ можно будет оформить позднее.</p>'}
+      ${!paymentAvailable && orderAvailable ? '<p class="notice">Заказ можно оформить без онлайн-оплаты. Продавец свяжется с вами, чтобы согласовать оплату. Не переводите деньги до получения инструкций.</p>' : ''}
+      ${!orderAvailable ? '<p class="notice">Приём заказов временно недоступен. Свяжитесь с магазином.</p>' : ''}
       <form id="checkout-form" class="form-stack">
         <div class="form-grid"><label>Имя<input name="name" autocomplete="name" value="${escapeHtml(accountProfile?.name || '')}" required maxlength="100"></label><label>Телефон<input name="phone" type="tel" inputmode="tel" autocomplete="tel" value="${escapeHtml(accountProfile?.latest_order_phone || '')}" placeholder="+7 900 000-00-00" required></label></div>
         <label>Email — пришлём чек и статус заказа<input name="email" type="email" autocomplete="email" value="${escapeHtml(accountProfile?.email || '')}" required maxlength="254"></label>
@@ -496,9 +499,9 @@ async function renderCheckout() {
         <label>Текст открытки (до 300 символов)<textarea name="giftCardText" maxlength="300"></textarea></label>
         <label class="check-row"><input type="checkbox" name="consentData" required> Согласен(на) с <a href="/privacy">Политикой конфиденциальности</a></label>
         <label class="check-row"><input type="checkbox" name="consentOffer" required> Принимаю условия <a href="/offer">публичной оферты</a></label>
-        ${shopConfig.paymentAvailable ? '<p class="notice">Переводите только на реквизиты со страницы заказа. Мы не просим переводить деньги на другие номера и карты, в чатах и звонках.</p>' : ''}
+        ${paymentAvailable ? '<p class="notice">Переводите только на реквизиты со страницы заказа. Мы не просим переводить деньги на другие номера и карты, в чатах и звонках.</p>' : ''}
         <p id="checkout-error" class="error-message" role="alert"></p>
-        <button type="submit" ${!shopConfig.paymentAvailable ? 'disabled' : ''}>${shopConfig.paymentMode === 'yookassa' ? 'Оплатить через СБП' : 'Оформить заказ'}</button>
+        <button type="submit" ${!orderAvailable ? 'disabled' : ''}>${paymentAvailable && shopConfig.paymentMode === 'yookassa' ? 'Оплатить через СБП' : 'Оформить заказ'}</button>
         <p>Есть вопросы? <a href="/faq">Смотрите частые вопросы</a> или <a href="${phoneHref(shopConfig.phone)}">${escapeHtml(shopConfig.phone)}</a>.</p>
       </form></div></section>`, 'Оформление заказа');
 
@@ -562,7 +565,12 @@ async function renderCheckout() {
 
 async function renderOrder(orderId, publicToken) {
   const order = await api(`/api/orders/${encodeURIComponent(orderId)}/status?t=${encodeURIComponent(publicToken)}`);
-  const statusLabels = { pending: 'Ожидаем оплату', paid: 'Оплачено', canceled: 'Не оплачено', refunded: 'Возврат оформлен' };
+  const statusLabels = {
+    pending: order.payment_method === 'seller_contact' ? 'Продавец свяжется для согласования оплаты' : 'Ожидаем оплату',
+    paid: 'Оплачено',
+    canceled: 'Не оплачено',
+    refunded: 'Возврат оформлен'
+  };
   const orderStatusLabels = {
     new: order.payment_status === 'paid' ? 'Оплачен, ожидает сборки' : 'Принят',
     on_hold: 'Проверяется',
@@ -591,6 +599,7 @@ async function renderOrder(orderId, publicToken) {
       </div>
       <p class="notice">Мы никогда не просим коды из SMS, данные карты или оплату на другие номера. Не отправляйте скриншоты как подтверждение платежа.</p>
       <button id="paid-notice" type="button">Я оплатил</button><p id="paid-message" aria-live="polite"></p>` : ''}
+    ${order.payment_method === 'seller_contact' && order.payment_status === 'pending' ? '<p class="notice">Не переводите деньги самостоятельно. Продавец свяжется с вами и согласует способ оплаты.</p>' : ''}
     <p>Вопросы по заказу: <a href="${phoneHref(shopConfig.phone)}">${escapeHtml(shopConfig.phone)}</a></p>
     </div></section>`, `Заказ №${order.id}`);
   document.querySelector('#paid-notice')?.addEventListener('click', async event => {
@@ -757,7 +766,12 @@ async function renderAccount() {
 
   const account = await api('/api/account');
   const reviewed = new Map(account.reviews.map(review => [`${review.order_id}:${review.product_id}`, review]));
-  const paymentLabels = { pending: 'Ожидает оплаты', paid: 'Оплачено', canceled: 'Отменено', refunded: 'Возврат оформлен' };
+  const paymentLabels = {
+    pending: 'Ожидает оплаты',
+    paid: 'Оплачено',
+    canceled: 'Отменено',
+    refunded: 'Возврат оформлен'
+  };
   const refundLabels = { requested: 'Запрос принят', processing: 'Рассматривается', rejected: 'Отклонён', completed: 'Возврат выполнен' };
   const refundsByOrder = new Map();
   account.refunds.forEach(refund => {
@@ -765,6 +779,9 @@ async function renderAccount() {
   });
   const orders = account.orders.map(order => {
     const reviewForms = new Set();
+    const paymentStatus = order.payment_status === 'pending' && order.payment_method === 'seller_contact'
+      ? 'Продавец свяжется для согласования оплаты'
+      : paymentLabels[order.payment_status] || order.payment_status;
     const items = order.items.map(item => {
       const existingReview = reviewed.get(`${order.id}:${item.productId}`);
       const mayReview = order.payment_status === 'paid' && !existingReview && !reviewForms.has(item.productId);
@@ -778,14 +795,16 @@ async function renderAccount() {
       return `<li><a href="/product/${item.productId}">${escapeHtml(item.name)}</a>${item.variant ? ` (${escapeHtml(item.variant)})` : ''} × ${item.quantity} — ${money(item.lineTotal)}${reviewForm}</li>`;
     }).join('');
     return `<article class="account-order"><div class="review-heading"><h3>Заказ №${order.id}</h3><time>${escapeHtml(order.created_at)}</time></div>
-      <p>Статус заказа: ${escapeHtml(order.status)} · <strong>${escapeHtml(paymentLabels[order.payment_status] || order.payment_status)}</strong></p>
+      <p>Статус заказа: ${escapeHtml(order.status)} · <strong>${escapeHtml(paymentStatus)}</strong></p>
       <ul>${items}</ul><p class="account-order-total">Итого: ${money(order.total)}</p></article>`;
   }).join('');
   const payments = account.orders.map(order => {
     const refund = refundsByOrder.get(order.id);
     const paymentStatus = refund?.status === 'completed'
       ? 'Возврат выполнен'
-      : paymentLabels[order.payment_status] || order.payment_status;
+      : order.payment_status === 'pending' && order.payment_method === 'seller_contact'
+        ? 'Согласуйте оплату с продавцом'
+        : paymentLabels[order.payment_status] || order.payment_status;
     const refundSection = refund
       ? `<p class="refund-status">Возврат: <strong>${refundLabels[refund.status] || refund.status}</strong>${refund.reason ? ` · ${escapeHtml(refund.reason)}` : ''}</p>`
       : order.payment_status === 'paid'
@@ -794,7 +813,7 @@ async function renderAccount() {
             <button class="secondary small-button" type="submit">Запросить возврат</button></form>` : '';
     return `<article class="payment-row">
     <div><strong>Заказ №${order.id}</strong><span>${escapeHtml(order.created_at)}</span></div>
-      <div><strong>${money(order.total)}</strong><span>${escapeHtml(paymentStatus)} · ${order.payment_method === 'manual' ? 'СБП' : 'ЮKassa / СБП'}</span>${refundSection}</div>
+      <div><strong>${money(order.total)}</strong><span>${escapeHtml(paymentStatus)} · ${order.payment_method === 'manual' ? 'СБП' : order.payment_method === 'seller_contact' ? 'оплата по согласованию' : 'ЮKassa / СБП'}</span>${refundSection}</div>
   </article>`;
   }).join('');
   shell(`<section class="page-main container"><div class="account-heading"><div><div class="breadcrumbs"><a href="/">Главная</a> / Личный кабинет</div>
