@@ -563,12 +563,22 @@ async function renderCheckout() {
 async function renderOrder(orderId, publicToken) {
   const order = await api(`/api/orders/${encodeURIComponent(orderId)}/status?t=${encodeURIComponent(publicToken)}`);
   const statusLabels = { pending: 'Ожидаем оплату', paid: 'Оплачено', canceled: 'Не оплачено', refunded: 'Возврат оформлен' };
+  const orderStatusLabels = {
+    new: order.payment_status === 'paid' ? 'Оплачен, ожидает сборки' : 'Принят',
+    on_hold: 'Проверяется',
+    in_progress: 'Собирается',
+    ready: 'Готов к выдаче',
+    shipped: 'Отправлен',
+    done: 'Завершён',
+    canceled: 'Отменён'
+  };
   const items = order.items.map(item => `<li>${escapeHtml(item.name)}${item.variant ? ` (${escapeHtml(item.variant)})` : ''} × ${item.quantity} — ${money(item.lineTotal)}</li>`).join('');
   const manual = order.payment_method === 'manual' && order.payment_status === 'pending';
   shell(`<section class="page-main container"><div class="form-card">
     <div class="breadcrumbs"><a href="/">Главная</a> / Заказ №${order.id}</div>
     <h1>${order.payment_status === 'paid' ? 'Заказ оплачен — спасибо!' : `Заказ №${order.id}`}</h1>
     <p class="notice ${order.payment_status === 'paid' ? 'success' : ''}" id="payment-status">Статус оплаты: <strong>${escapeHtml(statusLabels[order.payment_status] || order.payment_status)}</strong></p>
+    <p class="notice" id="order-status">Статус заказа: <strong>${escapeHtml(orderStatusLabels[order.status] || order.status)}</strong></p>
     ${order.payment_status === 'paid' ? '<div class="empty-state"><img src="/img/logo.jpg" alt="Выдры Family Soft"><p>Пусть новая покупка принесёт дому ещё больше уюта 💛</p></div>' : ''}
     <div class="payment-details"><strong>Состав заказа</strong><ul>${items}</ul><div>Товары: ${money(order.subtotal)}</div>${order.discount ? `<div>Скидка: −${money(order.discount)}</div>` : ''}<div>Доставка: ${money(order.delivery_price)}</div>${order.gift_wrap ? `<div>Подарочная упаковка: ${money(shopConfig.giftWrapPrice)}</div>` : ''}<strong>Итого: ${money(order.total)}</strong></div>
     ${manual ? `<h2>Оплата через СБП</h2><p>Переводите только эту уникальную сумму. В комментарии укажите номер заказа.</p>
@@ -597,7 +607,7 @@ async function renderOrder(orderId, publicToken) {
       button.disabled = false;
     }
   });
-  if (order.payment_status === 'pending') {
+  if (!['done', 'canceled'].includes(order.status) && !['canceled', 'refunded'].includes(order.payment_status)) {
     const poll = async () => {
       try {
         const latest = await api(`/api/orders/${encodeURIComponent(orderId)}/status?t=${encodeURIComponent(publicToken)}`);
@@ -969,7 +979,7 @@ async function renderAdminDashboard(container) {
         ${orders.length ? orders.map(order => `<article class="admin-order">
           <div class="admin-order-head"><strong>Заказ №${order.id} · ${money(order.total)}</strong><span>${escapeHtml(order.customer_name)} · ${escapeHtml(order.phone)}</span></div>
           <div>${escapeHtml(order.email)} · ${escapeHtml(order.created_at)} · оплата: ${escapeHtml(order.payment_status)} · риск: ${order.risk_score}/100 ${order.risk_reasons.map(escapeHtml).join(' · ')}</div>
-          <div class="form-grid"><label>Статус<select data-order-status="${order.id}">${[['new','Новый'],['on_hold','На проверке'],['in_progress','В работе'],['done','Готово'],['canceled','Отменён']].map(([value,label]) => `<option value="${value}" ${value === order.status ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+          <div class="form-grid"><label>Статус<select data-order-status="${order.id}">${[['new','Новый'],['on_hold','На проверке'],['in_progress','Собирается'],['ready','Готов к выдаче'],['shipped','Отправлен'],['done','Завершён'],['canceled','Отменён']].map(([value,label]) => `<option value="${value}" ${value === order.status ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
           ${order.payment_method === 'manual' && order.payment_status === 'pending' ? `<label class="check-row"><input type="checkbox" data-bank-check="${order.id}"> Я проверил поступление в банке: сумма, отправитель и комментарий совпадают</label>` : ''}</div>
           <div class="admin-heading"><button class="secondary small-button" data-save-status="${order.id}">Сохранить статус</button>${order.payment_method === 'manual' && order.payment_status === 'pending' ? `<button class="small-button" data-confirm-payment="${order.id}">Подтвердить оплату</button>` : ''}</div>
         </article>`).join('') : '<p>Заказов пока нет.</p>'}`;

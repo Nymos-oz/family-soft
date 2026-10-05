@@ -420,7 +420,13 @@ test('chat checkout creates a reserved order, sends SBP details, and notifies th
   assert.equal(order.payment_status, 'pending');
   assert.equal(db.prepare('SELECT stock_qty FROM products WHERE id = 1').get().stock_qty, 2);
   assert.match(sent.find(item => item.userId === 42 && /1\s230,01 ₽/.test(item.text)).text, /1\s230,01 ₽/);
-  assert.match(sent.find(item => item.userId === 7).text, /Новый заказ №1/);
+  const ownerNotice = sent.find(item => item.userId === 7);
+  assert.match(ownerNotice.text, /Новый заказ №1/);
+  assert.match(ownerNotice.text, /Покупатель: Анна/);
+  assert.match(ownerNotice.text, /Плед × 1 — 1\s230 ₽/);
+  assert.match(ownerNotice.text, /Сумма перевода: 1\s230,01 ₽/);
+  assert.match(ownerNotice.text, /ожидает проверки/);
+  assert.equal(ownerNotice.buttons[0][0].payload, '/оплачен 1');
 
   await replyToUpdate(chatMessage('мои заказы'), options);
   assert.match(sent.at(-1).text, /ожидается/);
@@ -429,6 +435,45 @@ test('chat checkout creates a reserved order, sends SBP details, and notifies th
   await replyToUpdate(chatMessage('/оплачен 1', 7), options);
   assert.equal(db.prepare('SELECT payment_status FROM orders WHERE id = 1').get().payment_status, 'paid');
   assert.match(sent.at(-1).text, /проверки поступления/);
+  await replyToUpdate(chatMessage('/собирается 1', 7), options);
+  await replyToUpdate(chatMessage('/готов к выдаче 1', 7), options);
+  await replyToUpdate(chatMessage('/завершён 1', 7), options);
+  assert.equal(db.prepare('SELECT status FROM orders WHERE id = 1').get().status, 'done');
+  assert.ok(sent.some(item => item.userId === 42 && /готов к самовывозу/.test(item.text)));
+  db.close();
+});
+
+test('owner manages website and chat orders through payment and fulfillment statuses', async () => {
+  const sent = [];
+  const db = createChatDb();
+  db.prepare(`INSERT INTO orders
+    (public_token, customer_name, phone, email, delivery_type, address, items, subtotal,
+     delivery_price, total, pay_amount_unique, status, payment_status, payment_method, idempotence_key)
+    VALUES ('site-token', 'Ольга', '+79991112233', 'olga@example.test', 'delivery',
+      'Москва, улица Тестовая, 1', ?, 2460, 450, 2910, 291001, 'new', 'pending',
+      'manual', 'site-order-key')`).run(JSON.stringify([{
+    productId: 1, name: 'Плед', quantity: 2, unitPrice: 1230, lineTotal: 2460
+  }]));
+  const options = {
+    db,
+    sendMessage: async (userId, text, payload) => sent.push({ userId, text, ...payload }),
+    ownerUserId: 7
+  };
+
+  await replyToUpdate(chatMessage('/заказы', 7), options);
+  assert.match(sent.at(-1).text, /сайт.*Ольга/);
+  await replyToUpdate(chatMessage('/заказ 1', 7), options);
+  assert.match(sent.at(-1).text, /olga@example\.test/);
+  assert.match(sent.at(-1).text, /Плед × 2 — 2\s460 ₽/);
+  await replyToUpdate(chatMessage('/оплачен 1', 7), options);
+  assert.equal(db.prepare('SELECT payment_status FROM orders WHERE id = 1').get().payment_status, 'paid');
+  await replyToUpdate(chatMessage('/собирается 1', 7), options);
+  assert.equal(db.prepare('SELECT status FROM orders WHERE id = 1').get().status, 'in_progress');
+  await replyToUpdate(chatMessage('/отправлен 1', 7), options);
+  assert.equal(db.prepare('SELECT status FROM orders WHERE id = 1').get().status, 'shipped');
+  await replyToUpdate(chatMessage('/завершён 1', 7), options);
+  assert.equal(db.prepare('SELECT status FROM orders WHERE id = 1').get().status, 'done');
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM payment_logs WHERE event = 'max_owner_order_status'").get().count, 3);
   db.close();
 });
 

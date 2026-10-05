@@ -279,9 +279,87 @@ function moneyKopecks(value) {
   return `${new Intl.NumberFormat('ru-RU').format(Math.floor(value / 100))},${String(value % 100).padStart(2, '0')} ₽`;
 }
 
+function orderActionButtons(order) {
+  const id = order.id;
+  if (order.payment_status === 'pending') {
+    return [
+      [messageButton('Отметить оплату', `/оплачен ${id}`)],
+      [messageButton('Отменить заказ', `/отменить заказ ${id}`)]
+    ];
+  }
+  if (order.payment_status !== 'paid') return [];
+  if (order.status === 'new') return [[messageButton('Начать сборку', `/собирается ${id}`)]];
+  if (order.status === 'in_progress') {
+    return order.delivery_type === 'pickup'
+      ? [[messageButton('Готов к выдаче', `/готов к выдаче ${id}`)]]
+      : [[messageButton('Отправлен', `/отправлен ${id}`)]];
+  }
+  if (order.status === 'ready' || order.status === 'shipped') {
+    return [[messageButton('Завершить заказ', `/завершён ${id}`)]];
+  }
+  return [];
+}
+
+function orderNotification(order, source) {
+  const giftWrapPrice = Number(order.total) - Number(order.subtotal)
+    + Number(order.discount || 0) - Number(order.delivery_price);
+  let items = [];
+  try {
+    const parsed = JSON.parse(order.items || '[]');
+    if (Array.isArray(parsed)) items = parsed;
+  } catch (error) {
+    console.warn('MAX bot: could not read order items:', error.message);
+  }
+  const paymentStatus = {
+    pending: 'ожидает проверки',
+    paid: 'подтверждена',
+    canceled: 'отменена',
+    refunded: 'возвращена'
+  }[order.payment_status] || order.payment_status;
+  return [
+    `Новый заказ №${order.id} · ${source}`,
+    `Покупатель: ${order.customer_name}`,
+    `Телефон: ${order.phone}`,
+    ...(order.email ? [`Email: ${order.email}`] : []),
+    `Получение: ${order.delivery_type === 'pickup' ? 'самовывоз' : `доставка, ${order.address}`}`,
+    'Состав заказа:',
+    ...(items.length ? items.map(item =>
+      `• ${item.name}${item.variant ? ` (${item.variant})` : ''} × ${item.quantity} — ${money(item.lineTotal ?? item.unitPrice * item.quantity)}`
+    ) : ['• Состав не указан']),
+    `Товары: ${money(order.subtotal)}`,
+    ...(order.discount ? [`Скидка: −${money(order.discount)}`] : []),
+    ...(order.gift_wrap ? [`Подарочная упаковка: ${money(giftWrapPrice)}`] : []),
+    `Доставка: ${money(order.delivery_price)}`,
+    `Итого: ${money(order.total)}`,
+    `Оплата: ${order.payment_method === 'manual' ? 'перевод через СБП' : order.payment_method}; ${paymentStatus}`,
+    `Сумма перевода: ${moneyKopecks(order.pay_amount_unique)}`,
+    ...(order.promo_code ? [`Промокод: ${order.promo_code}`] : []),
+    ...(order.comment ? [`Комментарий: ${order.comment}`] : []),
+    order.payment_status === 'pending' ? 'Проверьте поступление в банковском приложении перед подтверждением оплаты.' : ''
+  ].filter(Boolean).join('\n');
+}
+
+function orderStatusMessage(orderId, status) {
+  const messages = {
+    in_progress: 'Магазин начал собирать ваш заказ.',
+    ready: 'Ваш заказ готов к самовывозу.',
+    shipped: 'Ваш заказ отправлен.',
+    done: 'Заказ завершён. Спасибо за покупку!'
+  };
+  return `Заказ №${orderId}: ${messages[status] || 'Статус обновлён.'}`;
+}
+
 function chatOrderStatus(order) {
   const payment = { pending: 'ожидается', paid: 'оплачено', canceled: 'отменено', refunded: 'возврат оформлен' };
-  const status = { new: 'принят', on_hold: 'проверяется', in_progress: 'в работе', done: 'готов', canceled: 'отменён' };
+  const status = {
+    new: order.payment_status === 'paid' ? 'оплачен, ожидает сборки' : 'принят',
+    on_hold: 'проверяется',
+    in_progress: 'собирается',
+    ready: 'готов к выдаче',
+    shipped: 'отправлен',
+    done: 'завершён',
+    canceled: 'отменён'
+  };
   return `Заказ №${order.id}: ${status[order.status] || order.status}; оплата — ${payment[order.payment_status] || order.payment_status}.${order.payment_status === 'pending' ? ` Для отмены: /отмена заказа ${order.id}.` : ''}`;
 }
 
@@ -467,14 +545,10 @@ async function processChatState(text, normalized, userId, {
         : `Заказ №${order.id} принят, но магазин ещё не настроил реквизиты СБП. Позвоните ${settingValue(db, 'owner_phone_display', '+7 (901) 826-77-81')} — товар зарезервирован, переводите деньги только после подтверждения магазина.`;
       await sendMessage(userId, message, { buttons });
       if (ownerUserId) {
-        await sendMessage(ownerUserId, [
-          `Новый заказ №${order.id}`,
-          `Покупатель: ${order.customer_name}, ${order.phone}`,
-          `Получение: ${order.delivery_type === 'pickup' ? 'самовывоз' : order.address}`,
-          `Товары: ${order.items.map(item => `${item.name}${item.variant ? ` (${item.variant})` : ''} × ${item.quantity}`).join(', ')}`,
-          `К оплате: ${moneyKopecks(order.pay_amount_unique)}`,
-          `После проверки банка подтвердите: /оплачен ${order.id}`
-        ].join('\n'));
+        const fullOrder = db.prepare('SELECT * FROM orders WHERE id = ?').get(order.id);
+        await sendMessage(ownerUserId, orderNotification(fullOrder, 'из MAX'), {
+          buttons: orderActionButtons(fullOrder)
+        });
       }
       return true;
     }
@@ -619,32 +693,74 @@ export async function replyToUpdate(update, {
     const paidMatch = normalized.match(/^\/?оплачен\s+(\d+)$/);
     if (paidMatch) {
       const orderId = Number(paidMatch[1]);
-      const order = db.prepare(`SELECT o.* FROM orders o
-        JOIN max_chat_orders c ON c.order_id = o.id
-        WHERE o.id = ? AND o.payment_method = 'manual' AND o.payment_status = 'pending'`).get(orderId);
+      const order = db.prepare(`SELECT * FROM orders
+        WHERE id = ? AND payment_method = 'manual' AND payment_status = 'pending'`).get(orderId);
       if (!order) {
         await sendMessage(userId, 'Не нашёл ожидающий оплаты заказ с таким номером.');
         return;
       }
       db.transaction(() => {
         db.prepare(`UPDATE orders SET payment_status = 'paid',
-          status = CASE WHEN status = 'on_hold' THEN status ELSE 'in_progress' END,
+          status = CASE WHEN status = 'on_hold' THEN status ELSE 'new' END,
           paid_at = CURRENT_TIMESTAMP WHERE id = ? AND payment_status = 'pending'`).run(orderId);
         db.prepare(`INSERT INTO payment_logs(order_id, event, payload)
           VALUES (?, 'max_owner_manual_confirmation', '{}')`).run(orderId);
       })();
       const buyer = db.prepare('SELECT user_id FROM max_chat_orders WHERE order_id = ?').get(orderId);
       if (buyer) await sendMessage(Number(buyer.user_id), `Оплата заказа №${orderId} проверена и подтверждена. Спасибо!`);
-      await sendMessage(userId, `Заказ №${orderId} отмечен оплаченным. Подтверждайте только после проверки поступления в банке.`);
+      const updatedOrder = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
+      await sendMessage(userId, `Заказ №${orderId} отмечен оплаченным. Подтверждайте только после проверки поступления в банке.`, {
+        buttons: orderActionButtons(updatedOrder)
+      });
+      return;
+    }
+    const statusMatch = normalized.match(/^\/?(собирается|готов к выдаче|отправлен|завершен)\s+(\d+)$/);
+    if (statusMatch) {
+      const orderId = Number(statusMatch[2]);
+      const transitions = {
+        собирается: { status: 'in_progress', condition: "status = 'new' AND payment_status = 'paid'" },
+        'готов к выдаче': { status: 'ready', condition: "status = 'in_progress' AND payment_status = 'paid' AND delivery_type = 'pickup'" },
+        отправлен: { status: 'shipped', condition: "status = 'in_progress' AND payment_status = 'paid' AND delivery_type = 'delivery'" },
+        завершен: { status: 'done', condition: "status IN ('ready', 'shipped') AND payment_status = 'paid'" }
+      };
+      const transition = transitions[statusMatch[1]];
+      const result = db.prepare(`UPDATE orders SET status = ?
+        WHERE id = ? AND ${transition.condition}`).run(transition.status, orderId);
+      if (result.changes !== 1) {
+        await sendMessage(userId, `Не удалось изменить заказ №${orderId}: проверьте оплату, способ получения и текущий статус.`);
+        return;
+      }
+      db.prepare(`INSERT INTO payment_logs(order_id, event, payload)
+        VALUES (?, 'max_owner_order_status', ?)`).run(orderId, JSON.stringify({ status: transition.status }));
+      const buyer = db.prepare('SELECT user_id FROM max_chat_orders WHERE order_id = ?').get(orderId);
+      if (buyer) await sendMessage(Number(buyer.user_id), orderStatusMessage(orderId, transition.status));
+      const updatedOrder = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
+      const nextButtons = orderActionButtons(updatedOrder);
+      await sendMessage(userId, `Статус заказа №${orderId}: ${transition.status}.`,
+        nextButtons.length ? { buttons: nextButtons } : {});
       return;
     }
     if (/^(?:\/?заказы)$/i.test(normalized)) {
-      const orders = db.prepare(`SELECT o.id, o.customer_name, o.phone, o.pay_amount_unique
-        FROM orders o JOIN max_chat_orders c ON c.order_id = o.id
-        WHERE o.payment_status = 'pending' ORDER BY o.id DESC LIMIT 10`).all();
+      const orders = db.prepare(`SELECT o.id, o.customer_name, o.phone, o.pay_amount_unique,
+        o.payment_status, o.status,
+        CASE WHEN c.order_id IS NULL THEN 'сайт' ELSE 'MAX' END AS source
+        FROM orders o LEFT JOIN max_chat_orders c ON c.order_id = o.id
+        WHERE o.status NOT IN ('done', 'canceled') AND o.payment_status NOT IN ('canceled', 'refunded')
+        ORDER BY o.id DESC LIMIT 10`).all();
       await sendMessage(userId, orders.length
-        ? orders.map(order => `№${order.id} — ${order.customer_name}, ${order.phone}; ${moneyKopecks(order.pay_amount_unique)} — /оплачен ${order.id} или /отменить заказ ${order.id}`).join('\n')
-        : 'Ожидающих оплаты заказов нет.');
+        ? orders.map(order => `№${order.id} (${order.source}) — ${order.customer_name}, ${order.phone}; ${order.payment_status === 'pending' ? `ожидает оплату ${moneyKopecks(order.pay_amount_unique)} — /оплачен ${order.id}` : `оплачено, статус: ${order.status}`} — /заказ ${order.id}`).join('\n')
+        : 'Активных заказов нет.');
+      return;
+    }
+    const orderDetailsMatch = normalized.match(/^\/?заказ\s+(\d+)$/);
+    if (orderDetailsMatch) {
+      const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(Number(orderDetailsMatch[1]));
+      if (!order) {
+        await sendMessage(userId, 'Не нашёл заказ с таким номером.');
+        return;
+      }
+      const actions = orderActionButtons(order);
+      await sendMessage(userId, orderNotification(order, 'подробности'), actions.length ? { buttons: actions } : {});
       return;
     }
     const ownerCancelMatch = normalized.match(/^\/?отменить заказ\s+(\d+)$/);

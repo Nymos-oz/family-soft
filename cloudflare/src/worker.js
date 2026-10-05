@@ -24,6 +24,70 @@ function moneyKopecks(value) {
   return `${new Intl.NumberFormat('ru-RU').format(Math.floor(value / 100))},${String(value % 100).padStart(2, '0')} ₽`;
 }
 
+function orderActionButtons(order) {
+  const id = order.id;
+  if (order.payment_status === 'pending') {
+    return [
+      [button('Отметить оплату', `/оплачен ${id}`)],
+      [button('Отменить заказ', `/отменить заказ ${id}`)]
+    ];
+  }
+  if (order.payment_status !== 'paid') return [];
+  if (order.status === 'new') return [[button('Начать сборку', `/собирается ${id}`)]];
+  if (order.status === 'in_progress') {
+    return order.delivery_type === 'pickup'
+      ? [[button('Готов к выдаче', `/готов к выдаче ${id}`)]]
+      : [[button('Отправлен', `/отправлен ${id}`)]];
+  }
+  if (order.status === 'ready' || order.status === 'shipped') {
+    return [[button('Завершить заказ', `/завершён ${id}`)]];
+  }
+  return [];
+}
+
+function orderNotification(order, source) {
+  const giftWrapPrice = Number(order.total) - Number(order.subtotal)
+    + Number(order.discount || 0) - Number(order.delivery_price);
+  const items = parseJsonColumn(order.items).map(item =>
+    `• ${item.name}${item.variant ? ` (${item.variant})` : ''} × ${item.quantity} — ${money(item.lineTotal ?? item.unitPrice * item.quantity)}`
+  );
+  const paymentStatus = {
+    pending: 'ожидает проверки',
+    paid: 'подтверждена',
+    canceled: 'отменена',
+    refunded: 'возвращена'
+  }[order.payment_status] || order.payment_status;
+  return [
+    `Новый заказ №${order.id} · ${source}`,
+    `Покупатель: ${order.customer_name}`,
+    `Телефон: ${order.phone}`,
+    ...(order.email ? [`Email: ${order.email}`] : []),
+    `Получение: ${order.delivery_type === 'pickup' ? 'самовывоз' : `доставка, ${order.address}`}`,
+    'Состав заказа:',
+    ...(items.length ? items : ['• Состав не указан']),
+    `Товары: ${money(order.subtotal)}`,
+    ...(order.discount ? [`Скидка: −${money(order.discount)}`] : []),
+    ...(order.gift_wrap ? [`Подарочная упаковка: ${money(giftWrapPrice)}`] : []),
+    `Доставка: ${money(order.delivery_price)}`,
+    `Итого: ${money(order.total)}`,
+    `Оплата: ${order.payment_method === 'manual' ? 'перевод через СБП' : order.payment_method}; ${paymentStatus}`,
+    `Сумма перевода: ${moneyKopecks(order.pay_amount_unique)}`,
+    ...(order.promo_code ? [`Промокод: ${order.promo_code}`] : []),
+    ...(order.comment ? [`Комментарий: ${order.comment}`] : []),
+    order.payment_status === 'pending' ? 'Проверьте поступление в банковском приложении перед подтверждением оплаты.' : ''
+  ].filter(Boolean).join('\n');
+}
+
+function orderStatusMessage(orderId, status) {
+  const messages = {
+    in_progress: 'Магазин начал собирать ваш заказ.',
+    ready: 'Ваш заказ готов к самовывозу.',
+    shipped: 'Ваш заказ отправлен.',
+    done: 'Заказ завершён. Спасибо за покупку!'
+  };
+  return `Заказ №${orderId}: ${messages[status] || 'Статус обновлён.'}`;
+}
+
 function normalize(text) {
   return text.toLowerCase().replace(/ё/g, 'е');
 }
@@ -400,7 +464,10 @@ async function createSiteOrder(request, env, db, url) {
   await db.prepare(`INSERT INTO payment_logs(order_id, event, payload)
     VALUES (?, 'website_manual_order_created', '{}')`).bind(orderId).run();
   try {
-    await notifyOwner(env, `Новый заказ с сайта №${orderId}: ${name}, ${phone}. Сумма перевода: ${moneyKopecks(uniqueAmount)}.`, url.origin);
+    const order = await db.prepare('SELECT * FROM orders WHERE id = ?').bind(orderId).first();
+    await notifyOwner(env, orderNotification(order, 'с сайта'), url.origin, {
+      buttons: orderActionButtons(order)
+    });
   } catch (error) {
     console.error('Could not notify owner about website order:', error.message);
   }
@@ -488,7 +555,13 @@ async function handleSiteApi(request, env, url) {
     await db.prepare(`INSERT INTO payment_logs(order_id, event, payload)
       VALUES (?, 'website_manual_payment_notice', '{}')`).bind(row.id).run();
     try {
-      await notifyOwner(env, `Покупатель сообщил об оплате — заказ №${row.id}. Сумма: ${moneyKopecks(row.pay_amount_unique)}. Проверьте поступление в банке.`, url.origin);
+      const order = await db.prepare('SELECT * FROM orders WHERE id = ?').bind(row.id).first();
+      await notifyOwner(env, [
+        `Покупатель сообщил об оплате заказа №${row.id}. Проверьте поступление в банке.`,
+        orderNotification(order, 'с сайта')
+      ].join('\n\n'), url.origin, {
+        buttons: orderActionButtons(order)
+      });
     } catch (error) {
       console.error('Could not notify owner about payment notice:', error.message);
     }
@@ -709,9 +782,17 @@ async function orderStatus(db, userId) {
     WHERE c.user_id = ? ORDER BY o.id DESC LIMIT 10`).bind(String(userId)).all();
   if (!result.results.length) return 'В этом чате пока нет заказов. Напишите «каталог», чтобы выбрать товар.';
   const payment = { pending: 'ожидается', paid: 'оплачено', canceled: 'отменено', refunded: 'возврат оформлен' };
-  const status = { new: 'принят', on_hold: 'проверяется', in_progress: 'в работе', done: 'готов', canceled: 'отменён' };
+  const status = {
+    new: order => order.payment_status === 'paid' ? 'оплачен, ожидает сборки' : 'принят',
+    on_hold: 'проверяется',
+    in_progress: 'собирается',
+    ready: 'готов к выдаче',
+    shipped: 'отправлен',
+    done: 'завершён',
+    canceled: 'отменён'
+  };
   return result.results.map(order =>
-    `Заказ №${order.id}: ${status[order.status] || order.status}; оплата — ${payment[order.payment_status] || order.payment_status}.${order.payment_status === 'pending' ? ` Для отмены: /отмена заказа ${order.id}.` : ''}`
+    `Заказ №${order.id}: ${typeof status[order.status] === 'function' ? status[order.status](order) : status[order.status] || order.status}; оплата — ${payment[order.payment_status] || order.payment_status}.${order.payment_status === 'pending' ? ` Для отмены: /отмена заказа ${order.id}.` : ''}`
   ).join('\n');
 }
 
@@ -746,8 +827,8 @@ async function createCustomRequest(db, userId, state) {
   return result[0].meta.last_row_id;
 }
 
-async function notifyOwner(env, text, origin) {
-  if (env.MAX_BOT_OWNER_ID) await sendMessage(env, env.MAX_BOT_OWNER_ID, text, {}, origin);
+async function notifyOwner(env, text, origin, options = {}) {
+  if (env.MAX_BOT_OWNER_ID) await sendMessage(env, env.MAX_BOT_OWNER_ID, text, options, origin);
 }
 
 async function collectFlow(env, userId, text, origin, state) {
@@ -902,14 +983,10 @@ async function collectFlow(env, userId, text, origin, state) {
           ].join('\n')
           : `Заказ №${order.id} принят, но магазин ещё не настроил реквизиты СБП. Позвоните ${await setting(env.DB, 'owner_phone_display', '+7 (901) 826-77-81')}. Переводите только после подтверждения магазина.`;
         await send(message, { buttons: keyboard() });
-        await notifyOwner(env, [
-          `Новый заказ №${order.id}`,
-          `Покупатель: ${order.customer_name}, ${order.phone}`,
-          `Получение: ${order.delivery_type === 'pickup' ? 'самовывоз' : order.address}`,
-          `Товар: ${order.product_name}${order.variant ? ` (${order.variant})` : ''} × ${order.quantity}`,
-          `К оплате: ${moneyKopecks(order.pay_amount_unique)}`,
-          `После проверки банка подтвердите: /оплачен ${order.id}`
-        ].join('\n'), origin);
+        const fullOrder = await env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(order.id).first();
+        await notifyOwner(env, orderNotification(fullOrder, 'из MAX'), origin, {
+          buttons: orderActionButtons(fullOrder)
+        });
       } catch (error) {
         await saveState(env.DB, userId, null);
         await send(error.message, { buttons: keyboard() });
@@ -1033,7 +1110,7 @@ async function reply(env, update, origin) {
       const orderId = Number(paid[1]);
       const result = await env.DB.batch([
         env.DB.prepare(`UPDATE orders SET payment_status = 'paid',
-          status = CASE WHEN status = 'on_hold' THEN status ELSE 'in_progress' END,
+          status = CASE WHEN status = 'on_hold' THEN status ELSE 'new' END,
           paid_at = CURRENT_TIMESTAMP WHERE id = ? AND payment_status = 'pending' AND payment_method = 'manual'`)
           .bind(orderId),
         env.DB.prepare(`INSERT INTO payment_logs(order_id, event, payload)
@@ -1046,17 +1123,60 @@ async function reply(env, update, origin) {
       }
       const buyer = await env.DB.prepare('SELECT user_id FROM max_chat_orders WHERE order_id = ?').bind(orderId).first();
       if (buyer) await sendMessage(env, buyer.user_id, `Оплата заказа №${orderId} проверена и подтверждена. Спасибо!`, {}, origin);
-      await send(`Заказ №${orderId} отмечен оплаченным. Подтверждайте только после проверки поступления в банке.`);
+      const order = await env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(orderId).first();
+      await send(`Заказ №${orderId} отмечен оплаченным. Подтверждайте только после проверки поступления в банке.`, {
+        buttons: orderActionButtons(order)
+      });
+      return;
+    }
+    const statusCommand = normalized.match(/^\/?(собирается|готов к выдаче|отправлен|завершен)\s+(\d+)$/);
+    if (statusCommand) {
+      const orderId = Number(statusCommand[2]);
+      const transitions = {
+        собирается: { status: 'in_progress', condition: "status = 'new' AND payment_status = 'paid'" },
+        'готов к выдаче': { status: 'ready', condition: "status = 'in_progress' AND payment_status = 'paid' AND delivery_type = 'pickup'" },
+        отправлен: { status: 'shipped', condition: "status = 'in_progress' AND payment_status = 'paid' AND delivery_type = 'delivery'" },
+        завершен: { status: 'done', condition: "status IN ('ready', 'shipped') AND payment_status = 'paid'" }
+      };
+      const transition = transitions[statusCommand[1]];
+      const updated = await env.DB.prepare(`UPDATE orders SET status = ?
+        WHERE id = ? AND ${transition.condition}`).bind(transition.status, orderId).run();
+      if (!updated.meta.changes) {
+        await send(`Не удалось изменить заказ №${orderId}: проверьте оплату, способ получения и текущий статус.`);
+        return;
+      }
+      await env.DB.prepare(`INSERT INTO payment_logs(order_id, event, payload)
+        VALUES (?, 'max_owner_order_status', ?)`)
+        .bind(orderId, JSON.stringify({ status: transition.status })).run();
+      const buyer = await env.DB.prepare('SELECT user_id FROM max_chat_orders WHERE order_id = ?').bind(orderId).first();
+      if (buyer) await sendMessage(env, buyer.user_id, orderStatusMessage(orderId, transition.status), {}, origin);
+      const order = await env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(orderId).first();
+      const nextButtons = orderActionButtons(order);
+      await send(`Статус заказа №${orderId}: ${transition.status}.`,
+        nextButtons.length ? { buttons: nextButtons } : {});
       return;
     }
     if (/^\/?заказы$/i.test(normalized)) {
       const rows = await env.DB.prepare(`SELECT o.id, o.customer_name, o.phone, o.pay_amount_unique,
+        o.payment_status, o.status, o.delivery_type,
         CASE WHEN c.order_id IS NULL THEN 'сайт' ELSE 'MAX' END AS source
         FROM orders o LEFT JOIN max_chat_orders c ON c.order_id = o.id
-        WHERE o.payment_status = 'pending' ORDER BY o.id DESC LIMIT 10`).all();
+        WHERE o.status NOT IN ('done', 'canceled') AND o.payment_status NOT IN ('canceled', 'refunded')
+        ORDER BY o.id DESC LIMIT 10`).all();
       await send(rows.results.length
-        ? rows.results.map(order => `№${order.id} (${order.source}) — ${order.customer_name}, ${order.phone}; ${moneyKopecks(order.pay_amount_unique)} — /оплачен ${order.id} или /отменить заказ ${order.id}`).join('\n')
-        : 'Ожидающих оплаты заказов нет.');
+        ? rows.results.map(order => `№${order.id} (${order.source}) — ${order.customer_name}, ${order.phone}; ${order.payment_status === 'pending' ? `ожидает оплату ${moneyKopecks(order.pay_amount_unique)} — /оплачен ${order.id}` : `оплачено, статус: ${order.status}`} — /заказ ${order.id}`).join('\n')
+        : 'Активных заказов нет.');
+      return;
+    }
+    const orderDetailsMatch = normalized.match(/^\/?заказ\s+(\d+)$/);
+    if (orderDetailsMatch) {
+      const order = await env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(Number(orderDetailsMatch[1])).first();
+      if (!order) {
+        await send('Не нашёл заказ с таким номером.');
+        return;
+      }
+      const actions = orderActionButtons(order);
+      await send(orderNotification(order, 'подробности'), actions.length ? { buttons: actions } : {});
       return;
     }
     const cancel = normalized.match(/^\/?отменить заказ\s+(\d+)$/);
