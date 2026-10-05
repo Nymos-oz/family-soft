@@ -16,6 +16,29 @@ function keyboard() {
   ];
 }
 
+function sellerKeyboard() {
+  return [
+    [button('🔔 Новые заказы', '/новые заказы')],
+    [button('📦 Активные заказы', '/активные заказы')],
+    [button('🧵 Заявки', '/заявки'), button('✉️ Сообщения', '/сообщения')],
+    [button('ℹ️ Помощь', '/помощь продавцу')],
+    [button('🏠 Панель продавца', '/панель')]
+  ];
+}
+
+function sellerWelcome() {
+  return [
+    '📦 Fami | Заказы — помощник продавца Family Soft',
+    'Получайте новые заказы клиентов быстро и удобно.',
+    '🔔 Уведомления о новых заказах',
+    '👤 Данные покупателя',
+    '🛍️ Состав и детали заказа',
+    '💳 Информация об оплате',
+    '🚚 Обработка и контроль заказов',
+    'Fami — чтобы каждый заказ был под контролем 💗'
+  ].join('\n');
+}
+
 function money(value) {
   return `${new Intl.NumberFormat('ru-RU').format(value)} ₽`;
 }
@@ -26,23 +49,22 @@ function moneyKopecks(value) {
 
 function orderActionButtons(order) {
   const id = order.id;
+  let actions = [];
   if (order.payment_status === 'pending') {
-    return [
+    actions = [
       [button('Отметить оплату', `/оплачен ${id}`)],
       [button('Отменить заказ', `/отменить заказ ${id}`)]
     ];
-  }
-  if (order.payment_status !== 'paid') return [];
-  if (order.status === 'new') return [[button('Начать сборку', `/собирается ${id}`)]];
-  if (order.status === 'in_progress') {
-    return order.delivery_type === 'pickup'
+  } else if (order.payment_status === 'paid' && order.status === 'new') {
+    actions = [[button('Начать сборку', `/собирается ${id}`)]];
+  } else if (order.payment_status === 'paid' && order.status === 'in_progress') {
+    actions = order.delivery_type === 'pickup'
       ? [[button('Готов к выдаче', `/готов к выдаче ${id}`)]]
       : [[button('Отправлен', `/отправлен ${id}`)]];
+  } else if (order.payment_status === 'paid' && ['ready', 'shipped'].includes(order.status)) {
+    actions = [[button('Завершить заказ', `/завершён ${id}`)]];
   }
-  if (order.status === 'ready' || order.status === 'shipped') {
-    return [[button('Завершить заказ', `/завершён ${id}`)]];
-  }
-  return [];
+  return [...actions, ...sellerKeyboard()];
 }
 
 function orderNotification(order, source) {
@@ -1067,8 +1089,11 @@ async function reply(env, update, origin) {
   const userId = update.message?.sender?.user_id ?? update.user?.user_id;
   if (!/^\d+$/.test(String(userId || ''))) return;
   const buttons = keyboard();
+  const owner = env.MAX_BOT_OWNER_ID && String(userId) === String(env.MAX_BOT_OWNER_ID);
   if (update.update_type === 'bot_started') {
-    await sendMessage(env, userId, 'Хелпи — служба поддержки Family Soft 🎧💛\nПомогу выбрать товар, оформить заказ и оплатить через СБП. Всё можно сделать прямо в этом чате.\nНажмите кнопку ниже, напишите «каталог» или найдите товар командой «найти плед».', { buttons }, origin);
+    await sendMessage(env, userId,
+      owner ? sellerWelcome() : 'Хелпи — служба поддержки Family Soft 🎧💛\nПомогу выбрать товар, оформить заказ и оплатить через СБП. Всё можно сделать прямо в этом чате.\nНажмите кнопку ниже, напишите «каталог» или найдите товар командой «найти плед».',
+      { buttons: owner ? sellerKeyboard() : buttons }, origin);
     return;
   }
   if (update.update_type !== 'message_created') return;
@@ -1083,7 +1108,9 @@ async function reply(env, update, origin) {
   }
   if (/^\/?(?:start|help)(?:@\w+)?$/i.test(text)) {
     await saveState(env.DB, userId, null);
-    await send('Хелпи — служба поддержки Family Soft 🎧💛\nПомогу выбрать товар, оформить заказ и оплатить через СБП. Всё можно сделать прямо в этом чате.\nНажмите кнопку ниже, напишите «каталог» или найдите товар командой «найти плед».', { buttons });
+    await send(owner ? sellerWelcome() : 'Хелпи — служба поддержки Family Soft 🎧💛\nПомогу выбрать товар, оформить заказ и оплатить через СБП. Всё можно сделать прямо в этом чате.\nНажмите кнопку ниже, напишите «каталог» или найдите товар командой «найти плед».', {
+      buttons: owner ? sellerKeyboard() : buttons
+    });
     return;
   }
   if (/^(?:отмена|\/cancel)$/i.test(normalized)) {
@@ -1103,8 +1130,24 @@ async function reply(env, update, origin) {
     return;
   }
 
-  const owner = env.MAX_BOT_OWNER_ID && String(userId) === String(env.MAX_BOT_OWNER_ID);
   if (owner) {
+    if (/^(?:\/?панель|\/?меню)$/i.test(normalized)) {
+      await send(sellerWelcome(), { buttons: sellerKeyboard() });
+      return;
+    }
+    if (/^\/?помощь продавцу$/i.test(normalized)) {
+      await send([
+        'Помощник продавца Fami',
+        '🔔 «Новые заказы» — ожидают оплаты или проверки поступления.',
+        '📦 «Активные заказы» — все заказы, которые ещё не завершены.',
+        'Откройте заказ кнопкой, чтобы посмотреть покупателя, товары, доставку и оплату.',
+        'После проверки банка подтвердите оплату, затем отмечайте сборку, готовность или отправку.',
+        'Для возврата в меню нажмите «Панель продавца».'
+      ].join('\n'), {
+        buttons: [...sellerKeyboard(), [button('Панель продавца', '/панель')]]
+      });
+      return;
+    }
     const paid = normalized.match(/^\/?оплачен\s+(\d+)$/);
     if (paid) {
       const orderId = Number(paid[1]);
@@ -1156,16 +1199,38 @@ async function reply(env, update, origin) {
         nextButtons.length ? { buttons: nextButtons } : {});
       return;
     }
-    if (/^\/?заказы$/i.test(normalized)) {
+    if (/^\/?(?:новые заказы|ожидают оплаты)$/i.test(normalized)) {
+      const rows = await env.DB.prepare(`SELECT o.id, o.customer_name, o.phone, o.pay_amount_unique,
+        o.payment_status, o.status, o.delivery_type,
+        CASE WHEN c.order_id IS NULL THEN 'сайт' ELSE 'MAX' END AS source
+        FROM orders o LEFT JOIN max_chat_orders c ON c.order_id = o.id
+        WHERE o.payment_status = 'pending' AND o.status NOT IN ('canceled', 'done')
+        ORDER BY o.id DESC LIMIT 5`).all();
+      const orderButtons = rows.results.map(order =>
+        [button(`Заказ №${order.id} · ${order.customer_name}`, `/заказ ${order.id}`)]
+      );
+      await send(rows.results.length
+        ? rows.results.map(order => `№${order.id} (${order.source}) — ${order.customer_name}, ${order.phone}; ожидает оплаты ${moneyKopecks(order.pay_amount_unique)}`).join('\n')
+        : 'Новых заказов, ожидающих оплаты, нет.', {
+        buttons: [...orderButtons, ...sellerKeyboard()]
+      });
+      return;
+    }
+    if (/^\/?(?:заказы|активные заказы)$/i.test(normalized)) {
       const rows = await env.DB.prepare(`SELECT o.id, o.customer_name, o.phone, o.pay_amount_unique,
         o.payment_status, o.status, o.delivery_type,
         CASE WHEN c.order_id IS NULL THEN 'сайт' ELSE 'MAX' END AS source
         FROM orders o LEFT JOIN max_chat_orders c ON c.order_id = o.id
         WHERE o.status NOT IN ('done', 'canceled') AND o.payment_status NOT IN ('canceled', 'refunded')
-        ORDER BY o.id DESC LIMIT 10`).all();
+        ORDER BY o.id DESC LIMIT 5`).all();
+      const orderButtons = rows.results.map(order =>
+        [button(`Заказ №${order.id} · ${order.customer_name}`, `/заказ ${order.id}`)]
+      );
       await send(rows.results.length
         ? rows.results.map(order => `№${order.id} (${order.source}) — ${order.customer_name}, ${order.phone}; ${order.payment_status === 'pending' ? `ожидает оплату ${moneyKopecks(order.pay_amount_unique)} — /оплачен ${order.id}` : `оплачено, статус: ${order.status}`} — /заказ ${order.id}`).join('\n')
-        : 'Активных заказов нет.');
+        : 'Активных заказов нет.', {
+        buttons: [...orderButtons, ...sellerKeyboard()]
+      });
       return;
     }
     const orderDetailsMatch = normalized.match(/^\/?заказ\s+(\d+)$/);
@@ -1197,7 +1262,7 @@ async function reply(env, update, origin) {
         WHERE r.status = 'new' ORDER BY r.id DESC LIMIT 10`).all();
       await send(rows.results.length
         ? rows.results.map(row => `Заявка №${row.id} (${row.source}): ${row.name}, ${row.contact}; ${row.item_type}. ${row.details}`).join('\n\n')
-        : 'Новых заявок на пошив нет.');
+        : 'Новых заявок на пошив нет.', { buttons: sellerKeyboard() });
       return;
     }
     if (/^\/?сообщения$/i.test(normalized)) {
@@ -1205,7 +1270,7 @@ async function reply(env, update, origin) {
         WHERE status = 'new' ORDER BY id DESC LIMIT 10`).all();
       await send(rows.results.length
         ? rows.results.map(row => `Сообщение №${row.id}: ${row.name}, ${row.contact}. ${row.message}`).join('\n\n')
-        : 'Новых сообщений с сайта нет.');
+        : 'Новых сообщений с сайта нет.', { buttons: sellerKeyboard() });
       return;
     }
   }

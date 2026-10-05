@@ -25,6 +25,29 @@ function menuKeyboard() {
   ];
 }
 
+function sellerKeyboard() {
+  return [
+    [messageButton('🔔 Новые заказы', '/новые заказы')],
+    [messageButton('📦 Активные заказы', '/активные заказы')],
+    [messageButton('🧵 Заявки', '/заявки'), messageButton('✉️ Сообщения', '/сообщения')],
+    [messageButton('ℹ️ Помощь', '/помощь продавцу')],
+    [messageButton('🏠 Панель продавца', '/панель')]
+  ];
+}
+
+function sellerWelcome() {
+  return [
+    '📦 Fami | Заказы — помощник продавца Family Soft',
+    'Получайте новые заказы клиентов быстро и удобно.',
+    '🔔 Уведомления о новых заказах',
+    '👤 Данные покупателя',
+    '🛍️ Состав и детали заказа',
+    '💳 Информация об оплате',
+    '🚚 Обработка и контроль заказов',
+    'Fami — чтобы каждый заказ был под контролем 💗'
+  ].join('\n');
+}
+
 function catalogKeyboard(products, page) {
   const pages = Math.ceil(products.length / PAGE_SIZE);
   const start = (Math.min(Math.max(1, page), pages) - 1) * PAGE_SIZE;
@@ -281,23 +304,22 @@ function moneyKopecks(value) {
 
 function orderActionButtons(order) {
   const id = order.id;
+  let actions = [];
   if (order.payment_status === 'pending') {
-    return [
+    actions = [
       [messageButton('Отметить оплату', `/оплачен ${id}`)],
       [messageButton('Отменить заказ', `/отменить заказ ${id}`)]
     ];
-  }
-  if (order.payment_status !== 'paid') return [];
-  if (order.status === 'new') return [[messageButton('Начать сборку', `/собирается ${id}`)]];
-  if (order.status === 'in_progress') {
-    return order.delivery_type === 'pickup'
+  } else if (order.payment_status === 'paid' && order.status === 'new') {
+    actions = [[messageButton('Начать сборку', `/собирается ${id}`)]];
+  } else if (order.payment_status === 'paid' && order.status === 'in_progress') {
+    actions = order.delivery_type === 'pickup'
       ? [[messageButton('Готов к выдаче', `/готов к выдаче ${id}`)]]
       : [[messageButton('Отправлен', `/отправлен ${id}`)]];
+  } else if (order.payment_status === 'paid' && ['ready', 'shipped'].includes(order.status)) {
+    actions = [[messageButton('Завершить заказ', `/завершён ${id}`)]];
   }
-  if (order.status === 'ready' || order.status === 'shipped') {
-    return [[messageButton('Завершить заказ', `/завершён ${id}`)]];
-  }
-  return [];
+  return [...actions, ...sellerKeyboard()];
 }
 
 function orderNotification(order, source) {
@@ -644,9 +666,12 @@ export async function replyToUpdate(update, {
   const userId = update.message?.sender?.user_id ?? update.user?.user_id;
   if (!Number.isSafeInteger(userId) || userId < 1) return;
   const buttons = menuKeyboard();
+  const owner = ownerUserId && String(userId) === String(ownerUserId);
 
   if (update.update_type === 'bot_started') {
-    await sendMessage(userId, helpText(), { buttons });
+    await sendMessage(userId, owner ? sellerWelcome() : helpText(), {
+      buttons: owner ? sellerKeyboard() : buttons
+    });
     return;
   }
   if (update.update_type !== 'message_created') return;
@@ -662,7 +687,9 @@ export async function replyToUpdate(update, {
 
   if (/^\/?(?:start|help)(?:@\w+)?$/i.test(text)) {
     deleteChatState(db, userId);
-    await sendMessage(userId, helpText(), { buttons });
+    await sendMessage(userId, owner ? sellerWelcome() : helpText(), {
+      buttons: owner ? sellerKeyboard() : buttons
+    });
     return;
   }
 
@@ -689,7 +716,24 @@ export async function replyToUpdate(update, {
     return;
   }
 
-  if (ownerUserId && String(userId) === String(ownerUserId)) {
+  if (owner) {
+    if (/^(?:\/?панель|\/?меню)$/i.test(normalized)) {
+      await sendMessage(userId, sellerWelcome(), { buttons: sellerKeyboard() });
+      return;
+    }
+    if (/^\/?помощь продавцу$/i.test(normalized)) {
+      await sendMessage(userId, [
+        'Помощник продавца Fami',
+        '🔔 «Новые заказы» — ожидают оплаты или проверки поступления.',
+        '📦 «Активные заказы» — все заказы, которые ещё не завершены.',
+        'Откройте заказ кнопкой, чтобы посмотреть покупателя, товары, доставку и оплату.',
+        'После проверки банка подтвердите оплату, затем отмечайте сборку, готовность или отправку.',
+        'Для возврата в меню нажмите «Панель продавца».'
+      ].join('\n'), {
+        buttons: [...sellerKeyboard(), [messageButton('Панель продавца', '/панель')]]
+      });
+      return;
+    }
     const paidMatch = normalized.match(/^\/?оплачен\s+(\d+)$/);
     if (paidMatch) {
       const orderId = Number(paidMatch[1]);
@@ -740,16 +784,38 @@ export async function replyToUpdate(update, {
         nextButtons.length ? { buttons: nextButtons } : {});
       return;
     }
-    if (/^(?:\/?заказы)$/i.test(normalized)) {
+    if (/^\/?(?:новые заказы|ожидают оплаты)$/i.test(normalized)) {
+      const orders = db.prepare(`SELECT o.id, o.customer_name, o.phone, o.pay_amount_unique,
+        o.payment_status, o.status,
+        CASE WHEN c.order_id IS NULL THEN 'сайт' ELSE 'MAX' END AS source
+        FROM orders o LEFT JOIN max_chat_orders c ON c.order_id = o.id
+        WHERE o.payment_status = 'pending' AND o.status NOT IN ('canceled', 'done')
+        ORDER BY o.id DESC LIMIT 5`).all();
+      const orderButtons = orders.map(order =>
+        [messageButton(`Заказ №${order.id} · ${order.customer_name}`, `/заказ ${order.id}`)]
+      );
+      await sendMessage(userId, orders.length
+        ? orders.map(order => `№${order.id} (${order.source}) — ${order.customer_name}, ${order.phone}; ожидает оплаты ${moneyKopecks(order.pay_amount_unique)}`).join('\n')
+        : 'Новых заказов, ожидающих оплаты, нет.', {
+        buttons: [...orderButtons, ...sellerKeyboard()]
+      });
+      return;
+    }
+    if (/^(?:\/?заказы|\/?активные заказы)$/i.test(normalized)) {
       const orders = db.prepare(`SELECT o.id, o.customer_name, o.phone, o.pay_amount_unique,
         o.payment_status, o.status,
         CASE WHEN c.order_id IS NULL THEN 'сайт' ELSE 'MAX' END AS source
         FROM orders o LEFT JOIN max_chat_orders c ON c.order_id = o.id
         WHERE o.status NOT IN ('done', 'canceled') AND o.payment_status NOT IN ('canceled', 'refunded')
-        ORDER BY o.id DESC LIMIT 10`).all();
+        ORDER BY o.id DESC LIMIT 5`).all();
+      const orderButtons = orders.map(order =>
+        [messageButton(`Заказ №${order.id} · ${order.customer_name}`, `/заказ ${order.id}`)]
+      );
       await sendMessage(userId, orders.length
         ? orders.map(order => `№${order.id} (${order.source}) — ${order.customer_name}, ${order.phone}; ${order.payment_status === 'pending' ? `ожидает оплату ${moneyKopecks(order.pay_amount_unique)} — /оплачен ${order.id}` : `оплачено, статус: ${order.status}`} — /заказ ${order.id}`).join('\n')
-        : 'Активных заказов нет.');
+        : 'Активных заказов нет.', {
+        buttons: [...orderButtons, ...sellerKeyboard()]
+      });
       return;
     }
     const orderDetailsMatch = normalized.match(/^\/?заказ\s+(\d+)$/);
@@ -760,7 +826,7 @@ export async function replyToUpdate(update, {
         return;
       }
       const actions = orderActionButtons(order);
-      await sendMessage(userId, orderNotification(order, 'подробности'), actions.length ? { buttons: actions } : {});
+      await sendMessage(userId, orderNotification(order, 'подробности'), { buttons: actions });
       return;
     }
     const ownerCancelMatch = normalized.match(/^\/?отменить заказ\s+(\d+)$/);
@@ -782,7 +848,15 @@ export async function replyToUpdate(update, {
         WHERE r.status = 'new' ORDER BY r.id DESC LIMIT 10`).all();
       await sendMessage(userId, requests.length
         ? requests.map(request => `Заявка №${request.id}: ${request.name}, ${request.contact}; ${request.item_type}. ${request.details}`).join('\n\n')
-        : 'Новых заявок на пошив нет.');
+        : 'Новых заявок на пошив нет.', { buttons: sellerKeyboard() });
+      return;
+    }
+    if (/^(?:\/?сообщения)$/i.test(normalized)) {
+      const messages = db.prepare(`SELECT id, name, contact, message FROM contact_messages
+        WHERE status = 'new' ORDER BY id DESC LIMIT 10`).all();
+      await sendMessage(userId, messages.length
+        ? messages.map(item => `Сообщение №${item.id}: ${item.name}, ${item.contact}. ${item.message}`).join('\n\n')
+        : 'Новых сообщений с сайта нет.', { buttons: sellerKeyboard() });
       return;
     }
   }

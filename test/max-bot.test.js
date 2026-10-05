@@ -40,6 +40,10 @@ function createChatDb() {
       details TEXT NOT NULL, deadline TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'new'
     );
     CREATE TABLE max_chat_custom_requests (request_id INTEGER PRIMARY KEY, user_id TEXT NOT NULL);
+    CREATE TABLE contact_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, contact TEXT NOT NULL,
+      message TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'new'
+    );
   `);
   db.prepare(`INSERT INTO products
     (id, name, description, material, dimensions, care, price, images, variants, in_stock, stock_qty)
@@ -259,6 +263,32 @@ test('welcome menu and help text are fully chat-based', async () => {
 
   assert.match(sent[0].text, /в этом чате/);
   assert.ok(sent[0].buttons.flat().every(button => button.type === 'message'));
+});
+
+test('seller gets Fami order dashboard and actionable menu buttons', async () => {
+  const sent = [];
+  const db = createChatDb();
+  const sendMessage = async (userId, text, options = {}) => sent.push({ userId, text, ...options });
+  await replyToUpdate({ update_type: 'bot_started', user: { user_id: 7 } }, {
+    db, sendMessage, ownerUserId: 7
+  });
+
+  assert.match(sent[0].text, /Fami \| Заказы — помощник продавца Family Soft/);
+  assert.match(sent[0].text, /каждый заказ был под контролем/);
+  assert.deepEqual(sent[0].buttons.map(row => row.map(item => item.text)), [
+    ['🔔 Новые заказы'],
+    ['📦 Активные заказы'],
+    ['🧵 Заявки', '✉️ Сообщения'],
+    ['ℹ️ Помощь'],
+    ['🏠 Панель продавца']
+  ]);
+
+  await replyToUpdate(chatMessage('/панель', 7), { db, sendMessage, ownerUserId: 7 });
+  assert.match(sent.at(-1).text, /Fami \| Заказы/);
+  await replyToUpdate(chatMessage('/новые заказы', 7), { db, sendMessage, ownerUserId: 7 });
+  assert.match(sent.at(-1).text, /Новых заказов/);
+  assert.ok(sent.at(-1).buttons.some(row => row[0].payload === '/активные заказы'));
+  db.close();
 });
 
 test('custom sewing request begins an in-chat consent flow and sends the selected photo', async () => {
