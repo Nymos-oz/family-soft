@@ -61,7 +61,7 @@ test('catalog shows stock and price and supports pages', () => {
   const pageTwo = formatProductList(products, 2, 1);
 
   assert.match(pageOne, /Каталог \(1\/2\)/);
-  assert.match(pageOne, /1\s230 ₽/);
+  assert.match(pageOne, /1\s230 ₽ \(в наличии: 2 шт\.\)/);
   assert.match(pageOne, /Вернуться к началу каталога: каталог 1/);
   assert.match(pageTwo, /Одеяло.*4\s000 ₽ \(нет в наличии\)/);
 });

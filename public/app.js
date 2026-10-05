@@ -239,7 +239,7 @@ function showCookieBanner() {
 function productCard(product) {
   const photo = imageUrl(product.images?.[0]);
   const availability = product.in_stock && product.stock_qty > 0
-    ? product.stock_qty <= 3 ? '<span class="stock low">Осталось мало</span>' : '<span class="stock">В наличии</span>'
+    ? product.stock_qty <= 3 ? `<span class="stock low">Осталось мало: ${product.stock_qty} шт.</span>` : `<span class="stock">В наличии: ${product.stock_qty} шт.</span>`
     : '<span class="stock out">Нет в наличии</span>';
   return `<article class="product-card">
     <a class="product-photo" href="/product/${product.id}" aria-label="Открыть ${escapeHtml(product.name)}"><img src="${escapeHtml(photo)}" alt="${escapeHtml(product.name)}" loading="lazy" width="520" height="440"></a>
@@ -354,7 +354,7 @@ async function renderProduct(id) {
   const reviews = await api(`/api/products/${encodeURIComponent(id)}/reviews`);
   const images = Array.isArray(product.images) ? product.images : [];
   const stock = product.in_stock && product.stock_qty > 0
-    ? product.stock_qty <= 3 ? `<p class="stock low">Осталось мало — ${product.stock_qty} шт.</p>` : '<p class="stock">В наличии</p>'
+    ? product.stock_qty <= 3 ? `<p class="stock low">Осталось мало — ${product.stock_qty} шт.</p>` : `<p class="stock">В наличии: ${product.stock_qty} шт.</p>`
     : '<p class="stock out">Сейчас нет в наличии</p>';
   shell(`<section class="page-main container"><div class="breadcrumbs"><a href="/">Главная</a> / <a href="/catalog">Каталог</a> / ${escapeHtml(product.category_name)}</div>
     <div class="product-detail"><div><img class="product-main-image" src="${escapeHtml(imageUrl(images[0]))}" alt="${escapeHtml(product.name)}" width="900" height="800" fetchpriority="high"></div>

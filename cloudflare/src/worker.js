@@ -560,7 +560,7 @@ async function catalog(env, userId, requestedPage, origin) {
     `Каталог (${page}/${pages})`,
     '',
     ...rows.slice(start, start + PAGE_SIZE).map(product =>
-      `Товар ${product.id} — ${product.name} — ${money(product.price)}${product.in_stock && product.stock_qty > 0 ? '' : ' (нет в наличии)'}`
+      `Товар ${product.id} — ${product.name} — ${money(product.price)}${product.in_stock && product.stock_qty > 0 ? ` (в наличии: ${product.stock_qty} шт.)` : ' (нет в наличии)'}`
     ),
     '',
     'Нажмите кнопку товара, чтобы посмотреть описание и фото.'
@@ -595,7 +595,7 @@ async function searchCatalog(env, userId, query, origin) {
   }).slice(0, PAGE_SIZE);
   const text = matches.length
     ? `Нашёл по запросу «${query}»:\n\n${matches.map(product =>
-      `Товар ${product.id} — ${product.name} — ${money(product.price)}${product.in_stock && product.stock_qty > 0 ? '' : ' (нет в наличии)'}`
+      `Товар ${product.id} — ${product.name} — ${money(product.price)}${product.in_stock && product.stock_qty > 0 ? ` (в наличии: ${product.stock_qty} шт.)` : ' (нет в наличии)'}`
     ).join('\n')}\n\nНажмите товар, чтобы посмотреть фото и описание.`
     : `По запросу «${query}» ничего не нашёл. Попробуйте другое слово или откройте каталог.`;
   const buttons = matches.map(product => [button(`Товар ${product.id}`, `товар ${product.id}`)]);
@@ -614,7 +614,7 @@ async function productCard(env, userId, productId, origin) {
   const text = [
     product.name,
     `Цена: ${money(product.price)}`,
-    product.in_stock && product.stock_qty > 0 ? `В наличии: ${product.stock_qty}` : 'Сейчас нет в наличии',
+    product.in_stock && product.stock_qty > 0 ? `В наличии: ${product.stock_qty} шт.` : 'Сейчас нет в наличии',
     product.description,
     `Материал: ${product.material}`,
     `Размеры: ${product.dimensions}`,

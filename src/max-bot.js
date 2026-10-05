@@ -53,7 +53,7 @@ export function formatProductList(products, page, pageSize = 8) {
   const currentPage = Math.min(Math.max(1, page), pages);
   const start = (currentPage - 1) * pageSize;
   const lines = products.slice(start, start + pageSize).map(product =>
-    `Товар ${product.id} — ${product.name} — ${new Intl.NumberFormat('ru-RU').format(product.price)} ₽${product.in_stock && product.stock_qty > 0 ? '' : ' (нет в наличии)'}`
+    `Товар ${product.id} — ${product.name} — ${new Intl.NumberFormat('ru-RU').format(product.price)} ₽${product.in_stock && product.stock_qty > 0 ? ` (в наличии: ${product.stock_qty} шт.)` : ' (нет в наличии)'}`
   );
 
   return [
@@ -92,7 +92,7 @@ function productDetails(product) {
   return [
     product.name,
     `Цена: ${money(product.price)}`,
-    product.in_stock && product.stock_qty > 0 ? 'В наличии' : 'Сейчас нет в наличии',
+    product.in_stock && product.stock_qty > 0 ? `В наличии: ${product.stock_qty} шт.` : 'Сейчас нет в наличии',
     product.description,
     `Материал: ${product.material}`,
     `Размеры: ${product.dimensions}`,
