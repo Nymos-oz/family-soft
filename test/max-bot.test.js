@@ -156,7 +156,8 @@ test('message commands read products from the existing database', async () => {
     [{ type: 'message', text: 'Найти товар', payload: 'найти товар' }],
     [{ type: 'message', text: 'Доставка', payload: 'доставка' }, { type: 'message', text: 'Оплата', payload: 'оплата' }],
     [{ type: 'message', text: 'Сшить на заказ', payload: 'сшить на заказ' }],
-    [{ type: 'message', text: 'Мои заказы', payload: 'мои заказы' }, { type: 'message', text: 'Контакты', payload: 'контакты' }]
+    [{ type: 'message', text: 'Мои заказы', payload: 'мои заказы' }, { type: 'message', text: 'Контакты', payload: 'контакты' }],
+    [{ type: 'link', text: '🌐 Сайт Family Soft', url: 'https://family-soft-max-bot.a28526710.workers.dev' }]
   ]);
   assert.deepEqual(sent[0].imagePaths, ['/img/cat-blankets.jpg', '/img/hero-day.jpg']);
   assert.match(sent[1].text, /Каталог \(1\/1\)/);
@@ -248,8 +249,11 @@ test('bot start event welcomes user and ignores unrelated events', async () => {
   assert.equal(sent.length, 1);
   assert.equal(sent[0].userId, 7);
   assert.match(sent[0].text, /Family Soft/);
+  assert.match(sent[0].text, /https:\/\/family-soft-max-bot\.a28526710\.workers\.dev/);
   assert.doesNotMatch(sent[0].text, /публичный HTTPS-адрес/i);
   assert.ok(sent[0].buttons.some(row => row.some(button => button.payload === 'каталог')));
+  assert.ok(sent[0].buttons.flat().some(button => button.type === 'link'
+    && button.url === 'https://family-soft-max-bot.a28526710.workers.dev'));
 });
 
 test('welcome menu and help text are fully chat-based', async () => {
@@ -262,7 +266,8 @@ test('welcome menu and help text are fully chat-based', async () => {
   }, { db: {}, sendMessage });
 
   assert.match(sent[0].text, /в этом чате/);
-  assert.ok(sent[0].buttons.flat().every(button => button.type === 'message'));
+  assert.ok(sent[0].buttons.flat().some(button => button.type === 'link'
+    && button.url === 'https://family-soft-max-bot.a28526710.workers.dev'));
 });
 
 test('seller gets Fami order dashboard and actionable menu buttons', async () => {
@@ -275,13 +280,16 @@ test('seller gets Fami order dashboard and actionable menu buttons', async () =>
 
   assert.match(sent[0].text, /Fami \| Заказы — помощник продавца Family Soft/);
   assert.match(sent[0].text, /каждый заказ был под контролем/);
+  assert.match(sent[0].text, /https:\/\/family-soft-max-bot\.a28526710\.workers\.dev/);
   assert.deepEqual(sent[0].buttons.map(row => row.map(item => item.text)), [
     ['🔔 Новые заказы'],
     ['📦 Активные заказы'],
     ['🧵 Заявки', '✉️ Сообщения'],
     ['ℹ️ Помощь'],
-    ['🏠 Панель продавца']
+    ['🏠 Панель продавца'],
+    ['🌐 Сайт Family Soft']
   ]);
+  assert.equal(sent[0].buttons.at(-1)[0].url, 'https://family-soft-max-bot.a28526710.workers.dev');
 
   await replyToUpdate(chatMessage('/панель', 7), { db, sendMessage, ownerUserId: 7 });
   assert.match(sent.at(-1).text, /Fami \| Заказы/);
@@ -347,7 +355,9 @@ test('MAX bot starts its polling loop without checking or requiring the website'
     });
 
     const buttons = outgoing[0].attachments.find(item => item.type === 'inline_keyboard').payload.buttons;
-    assert.ok(buttons.flat().every(button => button.type === 'message'));
+    assert.ok(buttons.flat().some(button => button.type === 'link'
+      && button.url === 'https://family-soft-max-bot.a28526710.workers.dev'));
+    assert.ok(buttons.flat().filter(button => button.type !== 'link').every(button => button.type === 'message'));
     assert.equal(stored.get('max_bot_marker'), '12');
   } finally {
     globalThis.fetch = originalFetch;

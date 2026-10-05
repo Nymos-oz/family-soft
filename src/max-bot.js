@@ -10,9 +10,14 @@ const POLL_TIMEOUT_SECONDS = 30;
 const PAGE_SIZE = 8;
 const MAX_IMAGES_PER_MESSAGE = 12;
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const SITE_URL = 'https://family-soft-max-bot.a28526710.workers.dev';
 
 function messageButton(text, payload) {
   return { type: 'message', text, payload };
+}
+
+function siteButton() {
+  return { type: 'link', text: '🌐 Сайт Family Soft', url: SITE_URL };
 }
 
 function menuKeyboard() {
@@ -21,7 +26,8 @@ function menuKeyboard() {
     [messageButton('Найти товар', 'найти товар')],
     [messageButton('Доставка', 'доставка'), messageButton('Оплата', 'оплата')],
     [messageButton('Сшить на заказ', 'сшить на заказ')],
-    [messageButton('Мои заказы', 'мои заказы'), messageButton('Контакты', 'контакты')]
+    [messageButton('Мои заказы', 'мои заказы'), messageButton('Контакты', 'контакты')],
+    [siteButton()]
   ];
 }
 
@@ -31,7 +37,8 @@ function sellerKeyboard() {
     [messageButton('📦 Активные заказы', '/активные заказы')],
     [messageButton('🧵 Заявки', '/заявки'), messageButton('✉️ Сообщения', '/сообщения')],
     [messageButton('ℹ️ Помощь', '/помощь продавцу')],
-    [messageButton('🏠 Панель продавца', '/панель')]
+    [messageButton('🏠 Панель продавца', '/панель')],
+    [siteButton()]
   ];
 }
 
@@ -44,7 +51,8 @@ function sellerWelcome() {
     '🛍️ Состав и детали заказа',
     '💳 Информация об оплате',
     '🚚 Обработка и контроль заказов',
-    'Fami — чтобы каждый заказ был под контролем 💗'
+    'Fami — чтобы каждый заказ был под контролем 💗',
+    `Сайт Family Soft: ${SITE_URL}`
   ].join('\n');
 }
 
@@ -128,7 +136,7 @@ function helpText() {
   return [
     'Хелпи — служба поддержки Family Soft 🎧💛',
     'Помогу выбрать товар, оформить заказ и узнать, как оплатить через СБП. Всё можно сделать прямо в этом чате.',
-    'Выберите кнопку ниже, напишите «каталог» или найдите товар командой «найти плед». Для заказа пошива нажмите «Сшить на заказ».'
+    `Выберите кнопку ниже, напишите «каталог» или найдите товар командой «найти плед». Для заказа пошива нажмите «Сшить на заказ».\nСайт Family Soft: ${SITE_URL}`
   ].join('\n');
 }
 

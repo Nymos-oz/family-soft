@@ -1,9 +1,14 @@
 const API_URL = 'https://platform-api2.max.ru';
 const LEGACY_API_URL = 'https://platform-api.max.ru';
 const PAGE_SIZE = 8;
+const SITE_URL = 'https://family-soft-max-bot.a28526710.workers.dev';
 
 function button(text, payload) {
   return { type: 'message', text, payload };
+}
+
+function siteButton() {
+  return { type: 'link', text: '🌐 Сайт Family Soft', url: SITE_URL };
 }
 
 function keyboard() {
@@ -12,7 +17,8 @@ function keyboard() {
     [button('Найти товар', 'найти товар')],
     [button('Доставка', 'доставка'), button('Оплата', 'оплата')],
     [button('Сшить на заказ', 'сшить на заказ')],
-    [button('Мои заказы', 'мои заказы'), button('Контакты', 'контакты')]
+    [button('Мои заказы', 'мои заказы'), button('Контакты', 'контакты')],
+    [siteButton()]
   ];
 }
 
@@ -22,7 +28,8 @@ function sellerKeyboard() {
     [button('📦 Активные заказы', '/активные заказы')],
     [button('🧵 Заявки', '/заявки'), button('✉️ Сообщения', '/сообщения')],
     [button('ℹ️ Помощь', '/помощь продавцу')],
-    [button('🏠 Панель продавца', '/панель')]
+    [button('🏠 Панель продавца', '/панель')],
+    [siteButton()]
   ];
 }
 
@@ -35,7 +42,8 @@ function sellerWelcome() {
     '🛍️ Состав и детали заказа',
     '💳 Информация об оплате',
     '🚚 Обработка и контроль заказов',
-    'Fami — чтобы каждый заказ был под контролем 💗'
+    'Fami — чтобы каждый заказ был под контролем 💗',
+    `Сайт Family Soft: ${SITE_URL}`
   ].join('\n');
 }
 
@@ -1092,7 +1100,7 @@ async function reply(env, update, origin) {
   const owner = env.MAX_BOT_OWNER_ID && String(userId) === String(env.MAX_BOT_OWNER_ID);
   if (update.update_type === 'bot_started') {
     await sendMessage(env, userId,
-      owner ? sellerWelcome() : 'Хелпи — служба поддержки Family Soft 🎧💛\nПомогу выбрать товар, оформить заказ и оплатить через СБП. Всё можно сделать прямо в этом чате.\nНажмите кнопку ниже, напишите «каталог» или найдите товар командой «найти плед».',
+      owner ? sellerWelcome() : `Хелпи — служба поддержки Family Soft 🎧💛\nПомогу выбрать товар, оформить заказ и оплатить через СБП. Всё можно сделать прямо в этом чате.\nНажмите кнопку ниже, напишите «каталог» или найдите товар командой «найти плед».\nСайт Family Soft: ${SITE_URL}`,
       { buttons: owner ? sellerKeyboard() : buttons }, origin);
     return;
   }
@@ -1108,7 +1116,7 @@ async function reply(env, update, origin) {
   }
   if (/^\/?(?:start|help)(?:@\w+)?$/i.test(text)) {
     await saveState(env.DB, userId, null);
-    await send(owner ? sellerWelcome() : 'Хелпи — служба поддержки Family Soft 🎧💛\nПомогу выбрать товар, оформить заказ и оплатить через СБП. Всё можно сделать прямо в этом чате.\nНажмите кнопку ниже, напишите «каталог» или найдите товар командой «найти плед».', {
+    await send(owner ? sellerWelcome() : `Хелпи — служба поддержки Family Soft 🎧💛\nПомогу выбрать товар, оформить заказ и оплатить через СБП. Всё можно сделать прямо в этом чате.\nНажмите кнопку ниже, напишите «каталог» или найдите товар командой «найти плед».\nСайт Family Soft: ${SITE_URL}`, {
       buttons: owner ? sellerKeyboard() : buttons
     });
     return;
