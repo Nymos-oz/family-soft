@@ -9,9 +9,10 @@ if (-not (Test-Path $envPath)) { throw 'The local .env file is missing. Configur
 
 function Get-DotEnvValue([string]$Name) {
     $line = Get-Content -LiteralPath $envPath | Where-Object {
-        $_ -match "^\s*(?:export\s+)?$([regex]::Escape($Name))="
+        ($_ -replace '^\uFEFF', '') -match "^\s*(?:export\s+)?$([regex]::Escape($Name))="
     } | Select-Object -First 1
     if (-not $line) { return '' }
+    $line = $line -replace '^\uFEFF', ''
     $value = $line.Substring($line.IndexOf('=') + 1).Trim()
     if ($value.StartsWith('"')) {
         try { return ($value | ConvertFrom-Json) } catch { throw "$Name in .env is not valid JSON-quoted text." }
@@ -39,17 +40,15 @@ function Invoke-Wrangler([string[]]$Arguments, [string]$InputValue = $null) {
 }
 
 function Set-DotEnvValue([string]$Name, [string]$Value) {
-    $lines = @(Get-Content -LiteralPath $envPath)
-    $pattern = "^\s*(?:export\s+)?$([regex]::Escape($Name))="
-    $updated = $false
-    for ($index = 0; $index -lt $lines.Count; $index += 1) {
-        if ($lines[$index] -match $pattern) {
-            $lines[$index] = "$Name=$Value"
-            $updated = $true
-        }
+    $content = [System.IO.File]::ReadAllText($envPath).TrimStart([char]0xFEFF)
+    $pattern = "(?m)^\s*(?:export\s+)?$([regex]::Escape($Name))=.*$"
+    if ($content -match $pattern) {
+        $content = [regex]::Replace($content, $pattern, "$Name=$Value")
+    } else {
+        $content = $content.TrimEnd() + [Environment]::NewLine + "$Name=$Value" + [Environment]::NewLine
     }
-    if (-not $updated) { $lines += "$Name=$Value" }
-    Set-Content -LiteralPath $envPath -Value $lines -Encoding utf8
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($envPath, $content, $encoding)
 }
 
 function Set-WorkerSecret([string]$Name, [string]$Value) {
@@ -69,6 +68,16 @@ if (-not $webhookSecret) {
     Set-DotEnvValue 'MAX_WEBHOOK_SECRET' $webhookSecret
 }
 if ($webhookSecret.Length -lt 32) { throw 'MAX_WEBHOOK_SECRET must have at least 32 characters.' }
+$buyerToken = Get-DotEnvValue 'BUYER_BOT_TOKEN'
+$buyerWebhookSecret = Get-DotEnvValue 'BUYER_WEBHOOK_SECRET'
+if ($buyerToken -and -not $buyerWebhookSecret) {
+    $bytes = New-Object byte[] 48
+    $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+    $rng.GetBytes($bytes)
+    $rng.Dispose()
+    $buyerWebhookSecret = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+    Set-DotEnvValue 'BUYER_WEBHOOK_SECRET' $buyerWebhookSecret
+}
 
 $identity = Invoke-Wrangler @('whoami', '--config', $configPath)
 if ($identity -match 'not authenticated|wrangler login') {
@@ -103,6 +112,11 @@ Invoke-Wrangler @('d1', 'migrations', 'apply', 'family-soft-max-bot', '--remote'
 
 Set-WorkerSecret 'MAX_BOT_TOKEN' $token
 Set-WorkerSecret 'MAX_WEBHOOK_SECRET' $webhookSecret
+if ($buyerToken) {
+    if ($buyerWebhookSecret.Length -lt 32) { throw 'BUYER_WEBHOOK_SECRET must have at least 32 characters.' }
+    Set-WorkerSecret 'BUYER_BOT_TOKEN' $buyerToken
+    Set-WorkerSecret 'BUYER_WEBHOOK_SECRET' $buyerWebhookSecret
+}
 foreach ($name in @('MAX_BOT_OWNER_ID', 'SBP_PHONE', 'SBP_BANK', 'SBP_RECEIVER_NAME')) {
     Set-WorkerSecret $name (Get-DotEnvValue $name)
 }
@@ -128,6 +142,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Could not stop local Long Polling; do not regi
 
 Push-Location $projectRoot
 $environmentNames = @('MAX_BOT_TOKEN', 'MAX_WEBHOOK_URL', 'MAX_WEBHOOK_SECRET')
+if ($buyerToken) { $environmentNames += @('BUYER_BOT_TOKEN', 'BUYER_WEBHOOK_SECRET') }
 $previousEnvironment = @{}
 try {
     foreach ($name in $environmentNames) {

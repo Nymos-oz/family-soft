@@ -582,6 +582,8 @@ async function renderOrder(orderId, publicToken) {
   };
   const items = order.items.map(item => `<li>${escapeHtml(item.name)}${item.variant ? ` (${escapeHtml(item.variant)})` : ''} × ${item.quantity} — ${money(item.lineTotal)}</li>`).join('');
   const manual = order.payment_method === 'manual' && order.payment_status === 'pending';
+  const canReportPayment = order.payment_status === 'pending'
+    && ['manual', 'seller_contact'].includes(order.payment_method);
   shell(`<section class="page-main container"><div class="form-card">
     <div class="breadcrumbs"><a href="/">Главная</a> / Заказ №${order.id}</div>
     <h1>${order.payment_status === 'paid' ? 'Заказ оплачен — спасибо!' : `Заказ №${order.id}`}</h1>
@@ -597,9 +599,9 @@ async function renderOrder(orderId, publicToken) {
         <div>Получатель: <strong>${escapeHtml(order.manualPayment?.receiver || '—')}</strong></div>
         <div>Комментарий: <strong>Заказ №${order.id}</strong></div>
       </div>
-      <p class="notice">Мы никогда не просим коды из SMS, данные карты или оплату на другие номера. Не отправляйте скриншоты как подтверждение платежа.</p>
-      <button id="paid-notice" type="button">Я оплатил</button><p id="paid-message" aria-live="polite"></p>` : ''}
-    ${order.payment_method === 'seller_contact' && order.payment_status === 'pending' ? '<p class="notice">Не переводите деньги самостоятельно. Продавец свяжется с вами и согласует способ оплаты.</p>' : ''}
+      <p class="notice">Мы никогда не просим коды из SMS или данные карты. Не отправляйте скриншоты как подтверждение платежа.</p>` : ''}
+    ${order.payment_method === 'seller_contact' && order.payment_status === 'pending' ? '<p class="notice">Сначала дождитесь согласования способа оплаты с продавцом. После фактической оплаты сообщите об этом кнопкой ниже. Сообщение не подтверждает поступление денег.</p>' : ''}
+    ${canReportPayment ? '<button id="paid-notice" type="button">Сообщить продавцу об оплате</button><p id="paid-message" aria-live="polite"></p>' : ''}
     <p>Вопросы по заказу: <a href="${phoneHref(shopConfig.phone)}">${escapeHtml(shopConfig.phone)}</a></p>
     </div></section>`, `Заказ №${order.id}`);
   document.querySelector('#paid-notice')?.addEventListener('click', async event => {

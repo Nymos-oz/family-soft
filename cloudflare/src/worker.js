@@ -114,6 +114,21 @@ function orderNotification(order, source) {
   ].filter(Boolean).join('\n');
 }
 
+function paymentReportNotification(order) {
+  const items = parseJsonColumn(order.items).map(item =>
+    `• ${item.name}${item.variant ? ` (${item.variant})` : ''} × ${item.quantity}`
+  );
+  return [
+    `Покупатель сообщил об оплате заказа №${order.id}.`,
+    `Покупатель: ${order.customer_name}`,
+    `Телефон: ${order.phone}`,
+    'Товары:',
+    ...(items.length ? items : ['• Состав заказа не указан']),
+    `Сумма заказа: ${money(order.total)}`,
+    'Проверьте поступление денег перед подтверждением оплаты.'
+  ].join('\n');
+}
+
 function orderStatusMessage(orderId, status) {
   const messages = {
     in_progress: 'Магазин начал собирать ваш заказ.',
@@ -145,11 +160,12 @@ async function eventKey(update) {
   return `update:${[...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('')}`;
 }
 
-async function maxRequest(env, endpoint, options = {}) {
+async function maxRequest(env, endpoint, options = {}, botToken = env.BUYER_BOT_TOKEN || env.MAX_BOT_TOKEN) {
+  if (!botToken) throw new Error('No MAX bot token is configured.');
   const requestOptions = {
     ...options,
     headers: {
-      Authorization: env.MAX_BOT_TOKEN,
+      Authorization: botToken,
       ...(options.body ? { 'Content-Type': 'application/json' } : {}),
       ...options.headers
     },
@@ -164,18 +180,18 @@ async function maxRequest(env, endpoint, options = {}) {
   return response.json();
 }
 
-async function imageToken(env, imagePath, origin) {
+async function imageToken(env, imagePath, origin, botToken) {
   if (!env.ASSETS || !/^\/img\/[A-Za-z0-9._-]+$/.test(imagePath)) return '';
   const asset = await env.ASSETS.fetch(new Request(new URL(imagePath, origin)));
   if (!asset.ok) throw new Error(`Image asset ${imagePath} returned HTTP ${asset.status}.`);
   const image = await asset.arrayBuffer();
-  const upload = await maxRequest(env, '/uploads?type=image', { method: 'POST' });
+  const upload = await maxRequest(env, '/uploads?type=image', { method: 'POST' }, botToken);
   if (typeof upload.url !== 'string') throw new Error('MAX did not provide an image upload URL.');
   const form = new FormData();
   form.append('data', new Blob([image], { type: asset.headers.get('content-type') || 'image/jpeg' }), imagePath.split('/').at(-1));
   const uploadedResponse = await fetch(upload.url, {
     method: 'POST',
-    headers: { Authorization: env.MAX_BOT_TOKEN },
+    headers: { Authorization: botToken },
     body: form,
     signal: AbortSignal.timeout(25000)
   });
@@ -184,12 +200,19 @@ async function imageToken(env, imagePath, origin) {
   return Object.values(uploaded.photos || {}).find(photo => typeof photo?.token === 'string')?.token || '';
 }
 
-async function sendMessage(env, userId, text, { buttons, imagePaths = [] } = {}, origin = 'https://workers.dev') {
+async function sendMessage(
+  env,
+  userId,
+  text,
+  { buttons, imagePaths = [] } = {},
+  origin = 'https://workers.dev',
+  botToken = env.BUYER_BOT_TOKEN || env.MAX_BOT_TOKEN
+) {
   const attachments = [];
   let bodyText = text;
   for (const imagePath of imagePaths) {
     try {
-      const token = await imageToken(env, imagePath, origin);
+      const token = await imageToken(env, imagePath, origin, botToken);
       if (token) attachments.push({
         type: 'image',
         text: imagePath.split('/').at(-1).replace(/\.[^.]+$/, ''),
@@ -205,7 +228,7 @@ async function sendMessage(env, userId, text, { buttons, imagePaths = [] } = {},
   await maxRequest(env, `/messages?${query}`, {
     method: 'POST',
     body: JSON.stringify({ text: bodyText, ...(attachments.length ? { attachments } : {}) })
-  });
+  }, botToken);
 }
 
 async function setting(db, key, fallback = '') {
@@ -587,28 +610,32 @@ async function handleSiteApi(request, env, url) {
   const paidNotice = path.match(/^\/api\/orders\/(\d+)\/paid-notice$/);
   if (paidNotice && request.method === 'POST') {
     const body = await requestBody(request);
-    const row = await db.prepare('SELECT id, public_token, payment_status, payment_method, pay_amount_unique FROM orders WHERE id = ?')
+    const row = await db.prepare('SELECT id, public_token, payment_status, payment_method FROM orders WHERE id = ?')
       .bind(Number(paidNotice[1])).first();
     if (!row || !body || !safeEqual(body.publicToken || '', row.public_token)) return json({ error: 'Заказ не найден.' }, 404);
-    if (row.payment_method === 'seller_contact') {
-      return json({ error: 'Продавец свяжется с вами, чтобы согласовать оплату. Не переводите деньги до получения инструкций.' }, 400);
+    if (!['manual', 'seller_contact'].includes(row.payment_method)) {
+      return json({ error: 'Сообщить об оплате можно только для заказа с оплатой по договорённости.' }, 400);
     }
-    if (row.payment_method !== 'manual') return json({ error: 'Этот заказ оплачивается через платёжный сервис.' }, 400);
     if (row.payment_status !== 'pending') return json({ error: 'Статус оплаты уже изменён.' }, 409);
-    await db.prepare(`INSERT INTO payment_logs(order_id, event, payload)
-      VALUES (?, 'website_manual_payment_notice', '{}')`).bind(row.id).run();
     try {
       const order = await db.prepare('SELECT * FROM orders WHERE id = ?').bind(row.id).first();
-      await notifyOwner(env, [
-        `Покупатель сообщил об оплате заказа №${row.id}. Проверьте поступление в банке.`,
-        orderNotification(order, 'с сайта')
-      ].join('\n\n'), url.origin, {
-        buttons: orderActionButtons(order)
-      });
+      const duplicate = await db.prepare(`SELECT id FROM payment_logs
+        WHERE order_id = ? AND event = 'website_payment_reported_to_fami' LIMIT 1`)
+        .bind(row.id).first();
+      if (duplicate) return json({ message: 'Продавец уже получил сообщение об оплате. Спасибо!' });
+      const sellerToken = env.MAX_BOT_TOKEN;
+      if (!sellerToken || !env.MAX_BOT_OWNER_ID) {
+        console.error('Fami payment notification is not configured.');
+        return json({ error: 'Не удалось сообщить продавцу. Позвоните в магазин по телефону на странице контактов.' }, 503);
+      }
+      await sendMessage(env, env.MAX_BOT_OWNER_ID, paymentReportNotification(order), {}, url.origin, sellerToken);
+      await db.prepare(`INSERT INTO payment_logs(order_id, event, payload)
+        VALUES (?, 'website_payment_reported_to_fami', '{}')`).bind(row.id).run();
     } catch (error) {
-      console.error('Could not notify owner about payment notice:', error.message);
+      console.error('Could not notify Fami about reported payment:', error.message);
+      return json({ error: 'Не удалось отправить сообщение продавцу. Попробуйте ещё раз или позвоните в магазин.' }, 503);
     }
-    return json({ message: 'Спасибо! Мы проверим поступление платежа и обновим статус заказа.' });
+    return json({ message: 'Сообщение отправлено продавцу. Он проверит поступление оплаты.' });
   }
   if (path === '/api/custom-requests' && request.method === 'POST') {
     const body = await requestBody(request);
@@ -873,12 +900,13 @@ async function createCustomRequest(db, userId, state) {
 }
 
 async function notifyOwner(env, text, origin, options = {}) {
+  const buyerToken = env.BUYER_BOT_TOKEN || env.MAX_BOT_TOKEN;
   if (!env.MAX_BOT_OWNER_ID) return;
-  if (!env.MAX_BOT_TOKEN) {
-    console.error('MAX_BOT_TOKEN is missing; owner notification was not sent.');
+  if (!buyerToken) {
+    console.error('The customer bot token is missing; owner notification was not sent.');
     return;
   }
-  await sendMessage(env, env.MAX_BOT_OWNER_ID, text, options, origin);
+  await sendMessage(env, env.MAX_BOT_OWNER_ID, text, options, origin, buyerToken);
 }
 
 async function collectFlow(env, userId, text, origin, state) {
@@ -1417,10 +1445,22 @@ export default {
     }
     if (url.pathname === '/webhook') {
       if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
-      if (!env.MAX_BOT_TOKEN || !env.MAX_WEBHOOK_SECRET) {
+      const buyerToken = env.BUYER_BOT_TOKEN || env.MAX_BOT_TOKEN;
+      if (!buyerToken) {
         return new Response('Bot is not configured', { status: 503 });
       }
-      if (!safeEqual(request.headers.get('X-Max-Bot-Api-Secret') || '', env.MAX_WEBHOOK_SECRET)) {
+      const webhookSecret = request.headers.get('X-Max-Bot-Api-Secret') || '';
+      if (env.BUYER_BOT_TOKEN) {
+        if (env.MAX_WEBHOOK_SECRET && safeEqual(webhookSecret, env.MAX_WEBHOOK_SECRET)) {
+          return new Response('OK', { status: 200 });
+        }
+        if (!env.BUYER_WEBHOOK_SECRET) {
+          return new Response('Buyer bot webhook is not configured', { status: 503 });
+        }
+        if (!safeEqual(webhookSecret, env.BUYER_WEBHOOK_SECRET)) {
+          return new Response('Unauthorized', { status: 401 });
+        }
+      } else if (!env.MAX_WEBHOOK_SECRET || !safeEqual(webhookSecret, env.MAX_WEBHOOK_SECRET)) {
         return new Response('Unauthorized', { status: 401 });
       }
       let body;

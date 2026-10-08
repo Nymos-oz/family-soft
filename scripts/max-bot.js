@@ -8,7 +8,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 
 try {
   await runLongPollingBot({
-    token: process.env.MAX_BOT_TOKEN,
+    token: process.env.BUYER_BOT_TOKEN || process.env.MAX_BOT_TOKEN,
     db,
     setting,
     setSetting,

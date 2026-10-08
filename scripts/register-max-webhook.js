@@ -1,9 +1,13 @@
-const token = process.env.MAX_BOT_TOKEN || '';
+const token = process.env.BUYER_BOT_TOKEN || process.env.MAX_BOT_TOKEN || '';
 const webhookUrl = process.env.MAX_WEBHOOK_URL || '';
-const secret = process.env.MAX_WEBHOOK_SECRET || '';
+const secret = process.env.BUYER_BOT_TOKEN
+  ? process.env.BUYER_WEBHOOK_SECRET || ''
+  : process.env.MAX_WEBHOOK_SECRET || '';
 
-if (!token) throw new Error('MAX_BOT_TOKEN is required in the local .env file.');
-if (!secret || secret.length < 32) throw new Error('MAX_WEBHOOK_SECRET must contain at least 32 characters.');
+if (!token) throw new Error('Set BUYER_BOT_TOKEN (or legacy MAX_BOT_TOKEN) in the local .env file.');
+if (!secret || secret.length < 32) {
+  throw new Error('The webhook secret for the selected bot must contain at least 32 characters.');
+}
 let endpoint;
 try {
   endpoint = new URL(webhookUrl);
